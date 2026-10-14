@@ -1,0 +1,21 @@
+# 输出 / 构建 / 环境
+loot/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# 密钥配置
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.idea/
+.vscode/

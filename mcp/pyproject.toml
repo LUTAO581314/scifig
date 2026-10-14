@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scifig-mcp"
+version = "0.1.0"
+description = "MCP server for 学术论文拆解→可编辑科研图(SVG+EMF)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0",
+    "requests>=2.31",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+mineru = ["mineru"]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scifig_mcp"]
