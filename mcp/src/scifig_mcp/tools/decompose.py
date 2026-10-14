@@ -1,8 +1,8 @@
-"""论文拆解：用 LLM 把论文文本 + 需求 → figure_spec 及可作图信息。
+"""论文拆解：用 LLM 把论文文本 + 需求 → 可作图信息 + Diagram IR(图结构)。
 
 这是整个工作流的核心阶段（阶段2）。产出结构供：
-- 对话内确认闸门展示
-- 渲染阶段(render_svg/render_emf)消费
+- 对话内确认闸门展示（DIAGRAM IR：节点/边/分组/泳道/方向 + locks）
+- 渲染阶段(render_svg/render_pptx/render_emf)消费
 """
 
 from __future__ import annotations
@@ -23,27 +23,36 @@ def _user_prompt(paper_text: str, requirement: str) -> str:
 【用户作图需求】
 {req}
 
-请输出严格 JSON，schema 如下（示例）：
+请输出严格 JSON，schema 如下（Diagram IR）：
 {{
-  "paper_type": {{"type": "mechanism", "confidence": 0.9, "evidence": "摘要出现'揭示了…机制'"}},
+  "paper_type": {{"type": "method", "confidence": 0.9, "evidence": "摘要出现'我们提出…'"}},
   "parts": [
-    {{"id": "p1", "kind": "mechanism|flow|architecture|comparison|structure|data",
+    {{"id": "p1", "kind": "flow|mechanism|architecture|comparison|structure|data",
       "desc": "内容描述", "source": "原文位置(图1/方法4.2等)", "confidence": 0.9}}
   ],
-  "recommended_figures": ["mechanism", "architecture"],
-  "figure_specs": [
+  "recommended_figures": ["method_overview", "architecture"],
+  "figure_irs": [
     {{
-      "figure_id": "fig1", "title": "图1 ...",
-      "direction": "LR|TB", 
-      "groups": [{{"name": "...", "color": "blues"}}],
-      "nodes": [{{"id": "n1", "label": "...", "group": "...", "style": "round"}}],
-      "edges": [{{"from": "n1", "to": "n2", "label": "..."}}],
+      "title": "图1 ...",
+      "direction": "LR|TB",
+      "groups": [{{"id": "g1", "label": "输入层"}}],
+      "lanes": [{{"id": "l1", "label": "阶段A"}}],
+      "nodes": [
+        {{"id": "n1", "label": "...", "group": "g1", "lane": "l1",
+          "shape": "round|box|diamond|cylinder|ellipse|parallelogram|cloud"}}
+      ],
+      "edges": [{{"id": "e1", "source": "n1", "target": "n2", "label": "...", "style": "solid|dashed"}}],
+      "locks": {{"nodes": [], "edges": [], "groups": []}},
       "caption": "图注建议"
     }}
   ],
   "notes": "拆解说明，供用户确认阅读"
 }}
-只输出 JSON。"""
+规则：
+- 每个图的节点建议 5-10 个、箭头 6-12 个（单栏 ≤5-7 节点/6-10 箭头）
+- 每个节点必须有 label；边必须引用存在的节点 id
+- 同一功能的节点归入同一 group；需要分阶段的用 lanes
+- 只输出 JSON。"""
 
 
 def decompose_paper(llm: LLM, paper_text: str, requirement: str = "") -> dict:

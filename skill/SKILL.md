@@ -30,28 +30,35 @@ description: 将学术论文(上传PDF+需求)拆解为可编辑科研图(机制
 1. **论文类型分类**：见 `references/paper-types.md`（方法/机制/评测/综述/理论/工程/数据）
 2. **识别可作图信息**：流程 / 机制 / 架构 / 对比 / 结构 / 数据等
 3. **推荐图清单**：对应 `references/figure-types.md` 中的图示类型
-4. 输出 `figure_spec`（JSON）
+4. 输出 **Diagram IR**（JSON）：`{title, direction, groups, lanes, nodes, edges, locks}`
 
-> ⚠️ **对话内确认闸门**：把拆解结果展示给用户，用户确认或修改后才进入阶段3。
-> 展示格式参考《references/prompt-templates.md》中的"确认展示模板"。
+> ⚠️ **对话内确认闸门**：调用 `export_spec` 把 IR 转成带 `[LOCKED]` 标记的可读文本，
+> 展示给用户确认/修改（可加/删/改节点、连线、分组，或用 locks 锁定要保留的元素），
+> 确认无问题后才进入阶段3。硬闸门，必须等用户明确同意。
 
-### 阶段3 出图（调用 `render_svg` / `render_emf`）
-- 把确认后的 `figure_spec` → 渲染成 SVG + EMF
-- 遵循 `references/design-theory.md` 的配色/排版/层次规范
+### 阶段3 审计（调用 `audit_ir_tool`）
+- 对确认后的 Diagram IR 做**确定性质量审计**（信息密度/越界/孤立节点/空标签/空分组）
+- 必须 `passed == True`（无 hard 失败）才允许出图；有 hard 失败先修复 IR
 
-### 阶段4 交付
-- 输出：SVG、EMF、预览 PNG、图注建议
-- 说明如何在 PPT/Word 中"插入→转换为形状"使其可编辑
+### 阶段4 出图（调用 `render_pptx` / `render_svg` / `render_emf`）
+- 把确认+审计通过的 Diagram IR → 渲染成 **PPTX + SVG + EMF**
+- PPTX 是原生可编辑 OOXML 形状/连接线，PPT 内直接编辑，无需"转换为形状"
+- 遵循 `references/design-theory.md` 配色/排版/层次规范
+
+### 阶段5 交付
+- 输出：PPTX、SVG、预览、图注建议
+- 说明如何在 PPT/Word 中编辑各元素
 
 ## 交互要求
 
 - 每阶段结束用简洁文本小结当前结果，不啰嗦。
 - 阶段2 的确认是**硬闸门**，必须等用户明确同意后才出图。
 - 用户若有修改意见（加/删/改某个元素），回到阶段2 或 3 对应调整。
+- 参考 `references/figure-types.md` 的五个失败模式做交付前自查。
 
 ## 参考文件
 
 - `references/paper-types.md` — 论文类型分类决策树
-- `references/figure-types.md` — 科研图示类型与适用场景
+- `references/figure-types.md` — 科研图示类型、容量规范、五个失败模式
 - `references/design-theory.md` — 配色/排版/层次设计规范
 - `references/prompt-templates.md` — 拆解与出图的提示词模板
