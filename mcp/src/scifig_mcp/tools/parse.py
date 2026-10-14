@@ -26,28 +26,38 @@ def parse_paper_file(pdf_path: str, tier: str = "basic") -> tuple[str, dict]:
     if not p.exists():
         raise FileNotFoundError(f"找不到 PDF: {p}")
 
-    # 优先尝试 Mell 精度解析(MinerU)
+    # 优先尝试高精度解析(MinerU)；失败（未装/模型下载问题/时报错）回退轻量 pdfplumber
     try:
-        from mineru import MinerU  # type: ignore
-
+        import mineru  # noqa: F401
+        if "parse" not in dir(mineru):
+            raise ImportError("mineru 无 parse API")
         return _parse_with_mineru(p, tier)
-    except ImportError:
+    except Exception:
         return _parse_lightweight(p)
 
 
 def _parse_with_mineru(p: Path, tier: str) -> tuple[str, dict]:
-    """调用 MinerU 解析（需 pip install mineru，含本地模型）。"""
-    from mineru import MinerU  # type: ignore
+    """调用 MinerU 解析（mineru>=4，顶层 parse() 函数）。"""
+    import mineru
 
-    m = MinerU(quality=tier)
-    doc = m.analyze(str(p))
-    text = doc.to_markdown()
-    meta = {
-        "stem": p.stem,
-        "engine": "mineru",
-        "tier": tier,
-        "pages": getattr(doc, "page_count", None),
-    }
+    # tier 映射到 mineru 支持的枚举字符串
+    tier_map = {"flash": "flash", "basic": "standard", "standard": "standard", "advanced": "advanced"}
+    try:
+        result = mineru.parse(str(p), tier=tier_map.get(tier, "standard"), ocr_mode="auto")
+    except TypeError:
+        result = mineru.parse(str(p))
+
+    # 4.x 中 markdown / export_pages 均为方法
+    if callable(getattr(result, "markdown", None)):
+        text = result.markdown() or ""
+    else:
+        text = result.markdown or ""
+    try:
+        page_count = len(result.export_pages()) if callable(getattr(result, "export_pages", None)) else None
+    except Exception:
+        page_count = None
+
+    meta = {"stem": p.stem, "engine": "mineru", "tier": tier, "pages": page_count}
     return text, meta
 
 
