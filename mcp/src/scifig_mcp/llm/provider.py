@@ -25,6 +25,9 @@ class LLM:
     model: str
 
     def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
+        # 部分国内服务商网关（VLLM）非流式会强制注入 stream_options 导致 400，
+        # 统一用流式兼容。
+        stream = os.environ.get("SCIFIG_LLM_STREAM", "1") != "0"
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -32,8 +35,15 @@ class LLM:
                 {"role": "user", "content": user},
             ],
             temperature=temperature,
+            stream=stream,
         )
-        return resp.choices[0].message.content or ""
+        if not stream:
+            return resp.choices[0].message.content or ""
+        parts = []
+        for chunk in resp:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return "".join(parts)
 
 
 _DEFAULTS = {
