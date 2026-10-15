@@ -8,6 +8,8 @@
 - render_svg     : Diagram IR → SVG 文件
 - render_pptx    : Diagram IR → PPTX 文件（python-pptx 原生可编辑形状/连接线）
 - render_emf     : Diagram IR → EMF 文件（预览）
+- figure_qa      : 视觉质检（本地 Ollama VL 模型）：渲染→严格五项检查→问题清单
+- vision_describe: 让本地 VL 模型读任意本地图并回答（深检）
 """
 
 from __future__ import annotations
@@ -152,6 +154,46 @@ def export_spec(ir: dict) -> str:
     """
     from scifig_mcp.diagram_ir import format_ir_for_regeneration
     return format_ir_for_regeneration(ir)
+
+
+@mcp.tool()
+def figure_qa(ir: dict, question: str = "", context: str = "",
+              scheme: str = "okabe-ito", out_name: str = "figure") -> str:
+    """视觉质检（本地 Ollama 视觉模型）：渲染 IR 成 PNG 后严格检查，返回问题清单。
+
+    默认执行发表质量五项：数据流方向/连线连接与交叉/文字截断出框/
+    标题与分组标签可读性/距发表质量的差距。有问题先修 IR 或渲染，再复检。
+
+    Args:
+        ir: Diagram IR JSON
+        question: 自定义质检问题（默认发表质量五项清单）
+        context: 论文背景描述（带上下文可显著提高判断准确性）
+        scheme: 配色主题
+        out_name: 质检 PNG 输出基本名（写入 loot/）
+    Returns:
+        JSON：{ok, answer, png_path, usage}
+    """
+    from scifig_mcp.tools.vision import figure_qa as _qa
+    result = _qa(ir, question=question, context=context, scheme=scheme,
+                 out_dir=str(OUT_DIR), out_name=out_name)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def vision_describe(image_path: str, question: str = "请详细描述这张图的内容",
+                    context: str = "") -> str:
+    """让本地视觉模型直接读一张本地图并回答问题（深检任意图，含论文原图）。
+
+    Args:
+        image_path: 本地图片绝对路径（png/jpg）
+        question: 要回答的问题
+        context: 背景描述（提高判断准确性）
+    Returns:
+        JSON：{ok, image_path, answer, usage}
+    """
+    from scifig_mcp.tools.vision import vision_describe as _vd
+    result = _vd(image_path, question=question, context=context)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def main() -> None:
