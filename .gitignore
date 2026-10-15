@@ -12,6 +12,10 @@ build/
 .env
 *.env
 
+# 图标/解析缓存
+.iconlib_cache/
+.cache/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -18,6 +18,11 @@ from typing import Any, Dict, List, Tuple
 from scifig_mcp.diagram_ir import SHAPES, validate_ir
 from scifig_mcp.palette import get_scheme
 
+try:
+    from scifig_mcp import iconlib
+except Exception:  # pragma: no cover
+    iconlib = None  # type: ignore
+
 # ---------- 布局计算 ----------
 
 NODE_W, NODE_H = 190, 64
@@ -257,8 +262,21 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
         if nd.get("group"):
             fill = sc["secondary"]["fill"]
             stroke = sc["secondary"]["stroke"]
+        has_icon = False
+        if iconlib is not None and nd.get("icon"):
+            entry = iconlib.resolve_icon(nd["icon"])
+            if entry:
+                try:
+                    svg_txt = iconlib.fetch_icon_svg(entry, as_text=True)
+                    if svg_txt:
+                        has_icon = True
+                except Exception:
+                    has_icon = False
         w = max(140, len(label) * 10 + 30)
-        parts += _node_svg(shape, cx, cy, w, NODE_H, fill, stroke, label, sc)
+        # 有图标时盒子略高，顶部放图标
+        parts += _node_svg(shape, cx, cy, w, NODE_H, fill, stroke, label, sc, has_icon)
+        if has_icon and iconlib is not None:
+            parts.append(_icon_inline_svg(svg_txt, cx, cy - NODE_H / 2 + 13, sc))
 
     # 标题
     if ir.get("title"):
@@ -272,7 +290,7 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
 
 
 def _node_svg(shape: str, cx: float, cy: float, w: float, h: float,
-              fill: str, stroke: str, label: str, sc) -> str:
+              fill: str, stroke: str, label: str, sc, has_icon: bool = False) -> str:
     x = cx - w / 2
     y = cy - h / 2
     lbl = html.escape(label)
@@ -301,11 +319,23 @@ def _node_svg(shape: str, cx: float, cy: float, w: float, h: float,
     else:  # round
         parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" '
                      f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+    # 有图标时 label 下移，给顶部图标留空间
+    label_y = cy + 16 if has_icon else cy + 5
     parts.append(
-        f'<text x="{cx}" y="{cy+5}" text-anchor="middle" font-size="16" '
+        f'<text x="{cx}" y="{label_y}" text-anchor="middle" font-size="16" '
         f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
     )
     return parts
+
+
+def _icon_inline_svg(icon_svg: str, cx: float, top_y: float, sc) -> str:
+    """把图标 SVG 缩放后内联到节点顶部（cx 居中）。"""
+    body = iconlib.svg_body(icon_svg)
+    if not body:
+        return ""
+    h = 22.0
+    return (f'<g transform="translate({cx - 30},{top_y}) scale({h / 80:.3f})" '
+            f'opacity="0.85">{body}</g>')
 
 
 def _bbox(ir) -> tuple[float, float, float, float]:
@@ -354,7 +384,25 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
     MM = 72.0
 
-    # 边（连接线）
+    # 边（连接线 + 末端箭头）
+    from pptx.enum.shapes import MSO_SHAPE
+    from math import atan2, degrees, sqrt
+
+    def _arrow_head(px: float, py: float, angle_deg: float, color):
+        """在 (px,py) 放一个指向 angle 方向的小三角箭头。"""
+        hw, hh = 0.14, 0.15  # 箭头半宽/高（英寸）
+        tri = slide.shapes.add_shape(
+            MSO_SHAPE.ISOSCELES_TRIANGLE,
+            ox + Inches(px / MM) - Inches(hw / 2),
+            oy + Inches(py / MM) - Inches(hh / 2),
+            Inches(hw), Inches(hh),
+        )
+        tri.rotation = angle_deg
+        tri.fill.solid()
+        tri.fill.fore_color.rgb = _hex_to_rgb(color)
+        tri.line.fill.background()
+        return tri
+
     for e in ir.get("edges", []):
         a = node_center.get(e.get("source"))
         b = node_center.get(e.get("target"))
@@ -362,20 +410,43 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             continue
         x1, y1 = a
         x2, y2 = b
+
+        # 缩短线端到节点边缘（减少箭头侵入节点），并计算箭头方向
+        dx, dy = x2 - x1, y2 - y1
+        length = sqrt(dx * dx + dy * dy) or 1.0
+        # 从目标中心回退到目标节点边缘（约半高20px）
+        shrink = 34.0
+        ex = x2 - dx / length * shrink
+        ey = y2 - dy / length * shrink
+
         conn = slide.shapes.add_connector(
             MSO_CONNECTOR.STRAIGHT,
             ox + Inches(x1 / MM), oy + Inches(y1 / MM),
-            ox + Inches(x2 / MM), oy + Inches(y2 / MM),
+            ox + Inches(ex / MM), oy + Inches(ey / MM),
         )
         conn.line.color.rgb = _hex_to_rgb(sc["arrow"]["stroke"])
         conn.line.width = Pt(2.25)
+        if e.get("style") == "dashed":
+            try:
+                from pptx.oxml.ns import qn
+                lnEl = conn.line._get_or_add_ln()
+                d = lnEl.makeelement(qn('a:prstDash'), {'val': 'dash'})
+                lnEl.append(d)
+            except Exception:
+                pass
+
+        # 末端箭头（指向 (dx,dy) 方向）
+        angle = degrees(atan2(dy, dx))
+        _arrow_head(ex, ey, angle, sc["arrow"]["stroke"])
+
         if e.get("label"):
-            mx = ox + Inches(((x1 + x2) / 2 - 30) / MM)
+            mx = ox + Inches(((x1 + x2) / 2 - 35) / MM)
             my = oy + Inches(((y1 + y2) / 2 - 12) / MM)
-            tb = slide.shapes.add_textbox(mx, my, Inches(1.2), Inches(0.4))
+            tb = slide.shapes.add_textbox(mx, my, Inches(1.4), Inches(0.4))
             tf = tb.text_frame
             tf.text = e["label"]
             tf.paragraphs[0].font.size = Pt(11)
+            tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 
     # 节点
     for nd in ir.get("nodes", []):
@@ -413,6 +484,12 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             p.font.bold = True
             p.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 
+        # 可选：节点图标（SVG→PNG 嵌入节点顶部）
+        if iconlib is not None and nd.get("icon"):
+            entry = iconlib.resolve_icon(nd["icon"])
+            if entry:
+                _embed_icon_pptx(slide, ox, oy, cx, cy, w, entry, sc)
+
     # 标题
     if ir.get("title"):
         tb = slide.shapes.add_textbox(Inches(0.6), Inches(0.1), Inches(12), Inches(0.5))
@@ -423,6 +500,43 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
     prs.save(out_path)
     return out_path
+
+
+def _embed_icon_pptx(slide, ox, oy, cx, cy, w, entry, sc) -> None:
+    """把图标嵌入 PPTX 节点顶部。需 cairosvg 把 SVG 转 PNG；失败则静默跳过。"""
+    try:
+        import cairosvg  # type: ignore
+        from PIL import Image as PILImage
+        import io
+        from pptx.util import Inches as _In
+    except Exception:
+        return
+    try:
+        from scifig_mcp import iconlib as _ic
+        svg_txt = _ic.fetch_icon_svg(entry, as_text=True)
+        if not svg_txt:
+            return
+        png = cairosvg.svg2png(bytestring=svg_txt.encode("utf-8"))
+        im = PILImage.open(io.BytesIO(png)).convert("RGBA")
+        iw, ih = im.size
+        # 图标尺寸（节点宽 40%，高限制）
+        icon_size = min(w * 0.42, 0.42)  # 英寸
+        ratio = ih / max(iw, 1)
+        pic_h = icon_size * min(1.6, ratio)
+        pic_w = icon_size
+        lx = ox + _In((cx - pic_w * 72 / 2) / 72)
+        ty = oy + _In((cy - 0.30) / 72)
+        slide.shapes.add_picture(_png_to_stream(im), lx, ty, width=_In(pic_w), height=_In(pic_h))
+    except Exception:
+        return
+
+
+def _png_to_stream(pil_img):
+    import io
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 def render_to_emf(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:

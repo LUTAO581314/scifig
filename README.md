@@ -11,8 +11,9 @@
 四条设计原则：
 1. **按论文类型分类**选图示（方法/机制/评测/综述/理论/工程/数据 × 11 种图）
 2. **拆解确认闸门**：LLM 拆解出 **Diagram IR**（节点/边/分组/泳道/方向 + locks），你在对话内确认或修改后才出图
-3. **可编辑对象交付**：PPTX 原生可编辑形状/连接线 + SVG + EMF
+3. **可编辑对象交付**：PPTX 原生可编辑形状/连接线（含箭头）+ SVG + EMF
 4. **多端接入国内模型**：OpenAI 兼容接口，一次配置通吃 Qwen / GLM / DeepSeek
+5. **机制图图标库**：集成 Bioicons（~2800 个开源科研图标：细胞/膜/蛋白/DNA/病毒/仪器），AI 自动按节点语义配图标
 
 ## 工作流
 
@@ -42,13 +43,29 @@ mcp/                   # MCP server（Python, FastMCP）
     diagram_ir.py         # Diagram IR schema + 校验 + 锁定重生成序列化
     palette.py            # 8-role 语义配色 + 5 套预设（Okabe-Ito/Nature/IEEE/Vivid/Pastel）
     llm/provider.py       # 国内模型抽象（Qwen/GLM/DeepSeek, OpenAI 兼容）
+    iconlib.py            # 机制图图标库（Bioicons 搜索/获取/内联）
     tools/parse.py        # 论文解析（MinerU / pdfplumber）
     tools/decompose.py    # LLM 拆解 → Diagram IR
-    tools/render.py       # SVG / PPTX(OOML) / EMF 渲染
+    tools/render.py       # SVG / PPTX(OOML,含箭头+图标) / EMF 渲染
     tools/audit.py        # 确定性质量审计
+tests/                  # pytest 单元测试（35 个）
 examples/              # 示例
 loot/                  # 输出目录（SVG/PPTX/EMF/解析结果）
 ```
+
+## 可编辑目标 & 图标
+
+- **PPTX**：每个节点一个原生可编辑形状，每条边一根连接线 + 末端箭头，虚线支持。PPT 内直接改。
+- **SVG / EMF**：矢量，可插入 Word/PPT 二次编辑。
+- **机制图图标**：节点加 `"icon":"cell"`（或 `{"name":"DNA","category":"Nucleic_acids"}`），
+  自动从 Bioicons 匹配并嵌入。本地库配置：
+  ```bash
+  # clone 图标库（一次）
+  git clone --depth 1 https://github.com/duerrsimon/bioicons.git <某目录>
+  # 指定给 SciFig
+  set SCIFIG_BIOICONS_DIR=<该目录>
+  ```
+  未配置时自动回退远程下载（需访问 GitHub）。
 
 ## 快速开始
 
@@ -95,12 +112,13 @@ skill 位于 `skill/`，MCP server 在 `mcp/`。详见 `mcp/README.md`。
 
 - [x] 工作流 + skill 骨架 + MCP server
 - [x] Diagram IR schema + 校验 + locks 锁定重生成
-- [x] PPTX 原生可编辑渲染器（python-pptx 形状/连接线）
+- [x] PPTX 原生可编辑渲染器（含箭头 + 虚线）
 - [x] 8-role 语义配色 + 5 套预设
 - [x] 确定性质量审计
-- [ ] MinerU 高精度解析接入
-- [ ] 机制图图标素材库集成（research-figure-library / Bioicons / Servier）
+- [x] 机制图图标库集成（Bioicons ~2800 图标）
+- [ ] MinerU 高精度解析接入（已装，待批量优化）
 - [ ] draw.io 实时画布 MCP（二期）
+- [ ] Servier Medical Art 医疗图标接入
 
 ## License
 

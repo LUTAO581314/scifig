@@ -39,7 +39,8 @@ def _user_prompt(paper_text: str, requirement: str) -> str:
       "lanes": [{{"id": "l1", "label": "阶段A"}}],
       "nodes": [
         {{"id": "n1", "label": "...", "group": "g1", "lane": "l1",
-          "shape": "round|box|diamond|cylinder|ellipse|parallelogram|cloud"}}
+          "shape": "round|box|diamond|cylinder|ellipse|parallelogram|cloud",
+          "icon": "关键词(细胞/membrane/DNA/protein/virus 等，生物机制图填充)"}}
       ],
       "edges": [{{"id": "e1", "source": "n1", "target": "n2", "label": "...", "style": "solid|dashed"}}],
       "locks": {{"nodes": [], "edges": [], "groups": []}},
