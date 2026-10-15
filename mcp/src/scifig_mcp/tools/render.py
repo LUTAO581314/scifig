@@ -155,6 +155,11 @@ def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
     return node_center, layers, groups, lanes
 
 
+def _text_w(s: str, font_size: float) -> float:
+    """估算文本渲染宽度：CJK 全角≈1.0em，其他≈0.6em。"""
+    return sum(1.0 if ord(c) > 0x2E7F else 0.6 for c in s) * font_size
+
+
 def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
     errors = validate_ir(ir)
     if errors:
@@ -199,8 +204,9 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                 f'stroke-dasharray="6,4" stroke-width="1.2" rx="12"/>'
             )
             parts.append(
-                f'<text x="{x0+16}" y="{y0+22}" font-size="16" font-weight="bold" '
-                f'fill="{sc["section_bg"]["stroke"]}">{html.escape(l.get("label",""))}</text>'
+                f'<text x="{x1-16}" y="{y0+22}" text-anchor="end" font-size="16" '
+                f'font-weight="bold" fill="{sc["section_bg"]["stroke"]}">'
+                f'{html.escape(l.get("label",""))}</text>'
             )
 
     # 分组背景
@@ -248,8 +254,9 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
         if e.get("label"):
             mx, my = (x1 + x2) / 2, (y1 + y2) / 2 - 12
             lbl = e["label"]
+            lw = _text_w(lbl, 14) + 14
             parts.append(
-                f'<rect x="{mx-25}" y="{my-14}" width="{len(lbl)*9+12}" height="20" '
+                f'<rect x="{mx-lw/2}" y="{my-14}" width="{lw}" height="20" '
                 f'fill="#ffffff" stroke="none"/>'
             )
             parts.append(
@@ -278,7 +285,7 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                         has_icon = True
                 except Exception:
                     has_icon = False
-        w = max(140, len(label) * 10 + 30)
+        w = max(140, _text_w(label, 16) + 30)
         # 有图标时盒子略高，顶部放图标
         parts += _node_svg(shape, cx, cy, w, NODE_H, fill, stroke, label, sc, has_icon)
         if has_icon and iconlib is not None:

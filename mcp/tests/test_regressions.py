@@ -109,3 +109,12 @@ def test_focus_text_no_headings_fallback():
     out = _focus_text(text, limit=8000)
     assert len(out) <= 8000
     assert "[中间截断]" in out
+
+
+def test_text_w_cjk_vs_latin():
+    from scifig_mcp.tools.render import _text_w
+    # 4 个 CJK 字符在 14px 下应估约 56px（旧公式 len*9+12=48 导致边标签背景框偏窄）
+    assert _text_w("特征矩阵", 14) > 50
+    assert _text_w("abcd", 14) < _text_w("特征", 14) + 28
+    # 混合：滚动90%分位标签 = 6 CJK*16 + 3 半角*9.6 ≈ 124.8
+    assert 120 < _text_w("滚动90%分位标签", 16) < 135
