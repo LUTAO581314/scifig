@@ -33,20 +33,24 @@ PAD = 100
 def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tuple[Dict, Dict[str, int]]:
     """按最长路径做拓扑分层：返回 {id: (col, row)} 和 {id: layer}。
 
-    LR 方向：层=列；TB 方向：层=行。同一层内按原顺序纵向排布。
-    无依赖的孤立节点放最后一层。
+    layer[v] = 0(起点) ... 越大越靠近输出。LR 方向：层=列；TB 方向：层=行。
+    同一层内按原顺序纵向排布。
     """
     ids = [n.get("id") for n in nodes]
     n = len(nodes)
+    if n == 0:
+        return {}, {}
 
-    # 建立前驱/后继邻接
-    succ: Dict[str, List[str]] = {i: [] for i in ids}
+    # 前驱表：pred[v] = [u for edge u->v]
+    pred: Dict[str, List[str]] = {i: [] for i in ids}
+    has_out: Dict[str, bool] = {i: False for i in ids}
     for e in edges:
         s, t = e.get("source"), e.get("target")
-        if s in succ and t in succ and s != t:
-            succ[s].append(t)
+        if s in pred and t in pred and s != t:
+            pred[t].append(s)
+            has_out[s] = True
 
-    # 最长路径分层（保证边 direction 的层递增）
+    # 最长路径：layer[v] = 1 + max(layer[u]) over pred[u->v]，用 DFS 记忆化
     layer: Dict[str, int] = {}
     visiting: set = set()
 
@@ -57,8 +61,8 @@ def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tu
             return 0  # 环保护
         visiting.add(node)
         mx = 0
-        for nb in succ[node]:
-            mx = max(mx, dfs(nb) + 1)
+        for u in pred[node]:
+            mx = max(mx, dfs(u) + 1)
         visiting.discard(node)
         layer[node] = mx
         return mx
@@ -66,7 +70,6 @@ def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tu
     for i in ids:
         dfs(i)
 
-    max_layer = max(layer.values()) if layer else 0
     # 按层收集节点，层内保持原顺序
     by_layer: Dict[int, List[int]] = {}
     for j, iid in enumerate(ids):
@@ -76,9 +79,12 @@ def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tu
     pos: Dict[str, Tuple[int, int]] = {}
     for l, js in by_layer.items():
         for k, j in enumerate(js):
-            pos[ids[j]] = (l, k) if direction in ("LR", "RL") else (k, l)
+            # 第一坐标 = 拓扑层（主轴），第二坐标 = 层内序号
+            if direction in ("LR", "RL"):
+                pos[ids[j]] = (l, k)
+            else:
+                pos[ids[j]] = (k, l)
 
-    # 给定层排序稳定，返回
     return pos, layer
 
 
