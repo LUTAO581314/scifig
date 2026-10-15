@@ -8,17 +8,81 @@
 from __future__ import annotations
 
 import json
+import re
+from typing import List, Tuple
 
 from scifig_mcp.llm.provider import LLM
 
 _SYSTEM = """你是学术论文分析与科研绘图专家。请把论文拆解为"可作图信息"，
 严格按给定 JSON schema 输出，不要额外文字。忠实原文，不臆造。"""
 
+_MAX_CHARS = 60000
+
+_FOCUS_KEYWORDS = (
+    "method", "approach", "model", "framework", "system",
+    "architecture", "algorithm", "materials", "procedure",
+    "方法", "模型", "框架", "系统", "建模", "算法", "实验", "方案",
+)
+
+
+def _focus_text(paper_text: str, limit: int = _MAX_CHARS) -> str:
+    """超长论文截断：保留摘要 + 方法/实验等核心章节（确定性，非简单头部截断）。
+
+    - 按 markdown 标题切分章节
+    - 开头（摘要）恒保留，占 1/4 预算
+    - 其余章节按标题关键词得分降序挑选，同分按原文顺序
+    - 无标题的纯文本回退为 头+尾 截断
+    """
+    text = paper_text.strip()
+    if len(text) <= limit:
+        return text
+
+    parts = re.split(r"(?m)^(#{1,6}\s+.+)$", text)
+    # 解析出的 markdown 通常以 "# 论文标题" 开头：把标题+其正文（摘要）
+    # 恒归为 intro，不参与章节评分，避免摘要被当成普通章节截掉
+    if not parts[0].strip() and len(parts) >= 3:
+        intro = (parts[1] + "\n" + parts[2]).strip()
+        rest_start = 3
+    else:
+        intro = parts[0].strip()
+        rest_start = 1
+    sections: List[Tuple[str, str]] = []
+    for i in range(rest_start, len(parts) - 1, 2):
+        sections.append((parts[i].strip(), parts[i + 1].strip()))
+
+    if not sections:
+        half = (limit - 24) // 2
+        return (text[:half] + "\n\n...[中间截断]...\n\n" + text[-half:])[:limit]
+
+    intro_budget = min(len(intro), limit // 4)
+    kept = intro[:intro_budget]
+    budget = limit - len(kept) - 40
+
+    def score(heading: str) -> int:
+        h = heading.lower()
+        return sum(2 for kw in _FOCUS_KEYWORDS if kw in h)
+
+    ranked = sorted(range(len(sections)), key=lambda i: (-score(sections[i][0]), i))
+    picked: List[Tuple[int, str]] = []
+    for i in ranked:
+        if budget <= 200:
+            break
+        heading, body = sections[i]
+        seg = heading + "\n" + body
+        take = seg[: min(len(seg), budget)]
+        picked.append((i, take))
+        budget -= len(take)
+
+    picked.sort(key=lambda t: t[0])
+    out = [kept, "...[文本截断：仅保留摘要与核心章节，其余省略]..."]
+    out.extend(seg for _, seg in picked)
+    return "\n\n".join(out)[:limit]
+
 
 def _user_prompt(paper_text: str, requirement: str) -> str:
     req = requirement.strip() or "（用户未指定，请由论文内容自动推荐合适的图）"
     return f"""【论文文本】
-{paper_text[:60000]}
+{_focus_text(paper_text)}
 
 【用户作图需求】
 {req}
@@ -52,7 +116,8 @@ def _user_prompt(paper_text: str, requirement: str) -> str:
 规则：
 - 每个图的节点建议 5-10 个、箭头 6-12 个（单栏 ≤5-7 节点/6-10 箭头）
 - 每个节点必须有 label；边必须引用存在的节点 id
-- 同一功能的节点归入同一 group；需要分阶段的用 lanes
+- 同一功能的节点归入同一 group；用 lanes 表示并行分支或并行阶段
+- 单个节点要么属于 lane、要么属于 group，不要对同一划分两者都填（冗余双容器会导致布局断裂）
 - 只输出 JSON。"""
 
 

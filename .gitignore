@@ -15,6 +15,7 @@ build/
 # 图标/解析缓存
 .iconlib_cache/
 .cache/
+vendor/
 
 # OS
 .DS_Store

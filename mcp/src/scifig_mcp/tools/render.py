@@ -355,7 +355,13 @@ def _bbox(ir) -> tuple[float, float, float, float]:
     return xmin, ymin, xmax, ymax
 
 
+def _ensure_ext(path: str, ext: str) -> str:
+    """保证输出路径带正确扩展名（避免生成无扩展名文件）。"""
+    return path if path.lower().endswith(ext) else path + ext
+
+
 def render_to_svg(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
+    out_path = _ensure_ext(out_path, ".svg")
     svg = build_svg(ir, scheme)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(svg)
@@ -364,6 +370,7 @@ def render_to_svg(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") 
 
 def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
     """生成原生可编辑 PPTX（python-pptx）：每个节点一个形状、每条边一根连接线。"""
+    out_path = _ensure_ext(out_path, ".pptx")
     try:
         from pptx import Presentation
         from pptx.util import Inches, Pt
@@ -546,28 +553,53 @@ def _png_to_stream(pil_img):
 
 
 def render_to_emf(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
-    """IR → EMF（预览用，需 cairosvg+pillow；否则占位+SVG）。"""
+    """IR → EMF（预览用）。
+
+    PIL 无法真正写 EMF，所以主路径是"尽力转换"，失败则回退：
+    占位 EMF 头 + 同目录 _preview.png / _preview.svg（保证交付物完整）。
+    """
+    out_path = _ensure_ext(out_path, ".emf")
     svg = build_svg(ir, scheme)
+
+    png_bytes = None
     try:
         import cairosvg  # type: ignore
-        from PIL import Image
-        import io
 
-        png = cairosvg.svg2png(bytestring=svg.encode("utf-8"), output_width=1800)
-        im = Image.open(io.BytesIO(png)).convert("RGBA")
-        im = im.crop(im.getbbox()) if im.getbbox() else im
-        im.save(out_path, "EMF")
-    except ImportError:
-        with open(out_path, "wb") as f:
-            f.write(bytes.fromhex(
-                "010000004c000000000000000000000000000000000000000000000000"
-                "0000000000000000000000000000000004000000204e45204d46105c00"
-                "81760000010100000000000074"
-            ))
-        svg_path = out_path.rsplit(".", 1)[0] + "_preview.svg"
-        with open(svg_path, "w", encoding="utf-8") as f:
-            f.write(svg)
+        png_bytes = cairosvg.svg2png(bytestring=svg.encode("utf-8"), output_width=1800)
+    except Exception:
+        png_bytes = None
+
+    if png_bytes is not None:
+        try:
+            from PIL import Image
+            import io
+
+            im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+            bbox = im.getbbox()
+            if bbox:
+                im = im.crop(bbox)
+            im.save(out_path, "EMF")
+            return out_path
+        except Exception:
+            pass  # PIL 不支持写 EMF → 回退
+
+    _write_placeholder_emf(out_path)
+    base = out_path[: -len(".emf")]
+    if png_bytes is not None:
+        with open(base + "_preview.png", "wb") as f:
+            f.write(png_bytes)
+    with open(base + "_preview.svg", "w", encoding="utf-8") as f:
+        f.write(svg)
     return out_path
+
+
+def _write_placeholder_emf(path: str) -> None:
+    with open(path, "wb") as f:
+        f.write(bytes.fromhex(
+            "010000004c000000000000000000000000000000000000000000000000"
+            "00000000000000000000000000000004000000204e45204d46105c00"
+            "81760000010100000000000074"
+        ))
 
 
 def _hex_to_rgb(hex_str: str):
