@@ -45,6 +45,10 @@ description: 将学术论文(上传PDF+需求)拆解为可编辑科研图(机制
 - 把确认+审计通过的 Diagram IR → 渲染成 **PPTX + SVG + EMF**
 - PPTX 是原生可编辑 OOXML 形状/连接线，PPT 内直接编辑，无需"转换为形状"
 - 遵循 `references/design-theory.md` 配色/排版/层次规范
+- **视觉自检（可选，模型切换共享上下文法）**：本机有 ollama 视觉模型时（`ollama-vl/qwen2.5vl:7b`），
+  渲染 PNG 后让用户在 opencode 里 `/models` 切到该视觉模型，把 PNG 作为附件发给它（带当前会话上下文），
+  让它直接"读图"并回答方向/重叠/缺标签等问题；再 `/models` 切回原模型，它的观察留在共享上下文里。
+  注意 ollama 需带 `OLLAMA_CONTEXT_LENGTH=16384` 启动（已持久化到用户环境变量）。
 
 ### 阶段5 交付
 - 输出：PPTX、SVG、预览、图注建议
