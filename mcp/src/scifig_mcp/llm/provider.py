@@ -12,6 +12,18 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    def load_dotenv(*args, **kwargs):  # type: ignore
+        return False
+
+# 自动加载 .env：优先项目根，其次 mcp/ 目录（环境变量优先，.env 兜底）
+_p = Path(__file__).resolve()
+for _cand in (_p.parents[3], _p.parents[3].parent):  # mcp/ -> project root
+    load_dotenv(_cand / ".env")
 
 try:
     from openai import OpenAI

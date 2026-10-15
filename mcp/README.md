@@ -40,32 +40,59 @@ set SCIFIG_LLM_KEY=...
 set SCIFIG_LLM_MODEL=...
 ```
 
+## 配置（国内模型，OpenAI 兼容）
+
+推荐用 `.env`（已自动加载，且被 gitignore，不会上传）：
+
+```bash
+# 复制 .env.example 为 .env 并填写
+copy .env.example .env
+```
+
+配置项：
+```
+SCIFIG_LLM_PROVIDER=deepseek   # qwen | glm | deepseek | openai
+SCIFIG_LLM_BASE=https://newapi.ai.gduf.top/v1
+SCIFIG_LLM_KEY=sk-xxxx
+SCIFIG_LLM_MODEL=deepseek-v4-flash
+SCIFIG_LLM_STREAM=1            # 流式（部分 VLLM 网关必要）
+```
+
+或直接用环境变量注入（MCP 通过 env 传入，优先于 .env）。
+
 ## 使用（standalone 测试）
 
 ```python
-from scifig_mcp.tools.render import build_svg, render_to_svg
+from scifig_mcp.tools.render import render_to_pptx, render_to_svg
+from scifig_mcp.tools.audit import audit_ir
+from scifig_mcp.diagram_ir import validate_ir
 
-spec = {
+ir = {
     "title": "图1 系统框架",
     "direction": "LR",
-    "groups": [{"name": "输入层", "color": "blues"}],
+    "groups": [{"id": "g1", "label": "输入层"}, {"id": "g2", "label": "处理层"}],
+    "lanes": [{"id": "l1", "label": "阶段A"}, {"id": "l2", "label": "阶段B"}],
     "nodes": [
-        {"id": "n1", "label": "预处理", "group": "输入层"},
-        {"id": "n2", "label": "模型", "group": ""},
-        {"id": "n3", "label": "输出", "group": ""},
+        {"id": "n1", "label": "预处理", "group": "g1", "lane": "l1", "shape": "round"},
+        {"id": "n2", "label": "模型", "group": "g2", "lane": "l2", "shape": "box"},
+        {"id": "n3", "label": "输出", "group": "g2", "lane": "l2", "shape": "cylinder"},
     ],
     "edges": [
-        {"from": "n1", "to": "n2", "label": "特征"},
-        {"from": "n2", "to": "n3", "label": "结果"},
+        {"id": "e1", "source": "n1", "target": "n2", "label": "特征", "style": "solid"},
+        {"id": "e2", "source": "n2", "target": "n3", "label": "结果", "style": "solid"},
     ],
-    "caption": "示例图注",
+    "locks": {"nodes": [], "edges": [], "groups": []},
 }
-render_to_svg(spec, "demo.svg")
+
+assert not validate_ir(ir)
+print(audit_ir(ir))            # passed 闸门
+render_to_pptx(ir, "demo.pptx")  # 原生可编辑 PPTX
+render_to_svg(ir, "demo.svg")
 ```
 
 ## 在 opencode 中接入
 
-在 opencode 配置中添加 MCP server：
+在 opencode 配置中添加 MCP server（通过 env 传 key，或依赖自动加载的 .env）：
 
 ```jsonc
 {
@@ -74,8 +101,10 @@ render_to_svg(spec, "demo.svg")
       "type": "local",
       "command": ["python", "-m", "scifig_mcp.server"],
       "env": {
-        "SCIFIG_LLM_PROVIDER": "qwen",
+        "SCIFIG_LLM_PROVIDER": "deepseek",
+        "SCIFIG_LLM_BASE": "https://newapi.ai.gduf.top/v1",
         "SCIFIG_LLM_KEY": "sk-xxxx",
+        "SCIFIG_LLM_MODEL": "deepseek-v4-flash",
         "SCIFIG_OUT_DIR": "./loot"
       }
     }
@@ -83,4 +112,6 @@ render_to_svg(spec, "demo.svg")
 }
 ```
 
-配合 `skill/` 目录使用，按四阶段工作流执行。
+> 需先把 `mcp/` 加入 Python 路径（`cd mcp && pip install -e .`），或用绝对模块路径。
+
+配合 `skill/` 目录使用，按四阶段工作流执行（解析 → 拆解确认 → 审计 → 出图）。

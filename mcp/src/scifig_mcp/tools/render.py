@@ -25,88 +25,121 @@ GAP_X, GAP_Y = 60, 40
 PAD = 100
 
 
-def _layer_positions(nodes: List[Dict], direction: str) -> Tuple[Dict, Dict[str, int]]:
-    """按拓扑/层序分配节点位置，返回 {id:(cx,cy)} 和 {id:layer}。"""
+def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tuple[Dict, Dict[str, int]]:
+    """按最长路径做拓扑分层：返回 {id: (col, row)} 和 {id: layer}。
+
+    LR 方向：层=列；TB 方向：层=行。同一层内按原顺序纵向排布。
+    无依赖的孤立节点放最后一层。
+    """
     ids = [n.get("id") for n in nodes]
-    idx = {iid: i for i, iid in enumerate(ids)}
-
-    # 简单的分层：按输入拓扑用最长路径启发，无 edges 时按顺序分列
-    n_edges = sum(1 for n in nodes for _ in ())
-    _ = n_edges
     n = len(nodes)
-    if direction == "TB":
-        cols = max(1, int(n ** 0.5)) if n else 1
-        rows = -(-n // cols)
-        pos = {}
-        layers = {}
-        for i, nid in enumerate(ids):
-            r, c = divmod(i, cols)
-            pos[nid] = (c, r)
-            layers[nid] = r
-        return pos, layers
 
-    # LR：尽量一行铺开，超过则分两行
-    per_row = 5
-    pos = {}
-    layers = {}
-    for i, nid in enumerate(ids):
-        r, c = divmod(i, per_row)
-        pos[nid] = (c, r)
-        layers[nid] = c
-    return pos, layers
+    # 建立前驱/后继邻接
+    succ: Dict[str, List[str]] = {i: [] for i in ids}
+    for e in edges:
+        s, t = e.get("source"), e.get("target")
+        if s in succ and t in succ and s != t:
+            succ[s].append(t)
+
+    # 最长路径分层（保证边 direction 的层递增）
+    layer: Dict[str, int] = {}
+    visiting: set = set()
+
+    def dfs(node: str) -> int:
+        if node in layer:
+            return layer[node]
+        if node in visiting:
+            return 0  # 环保护
+        visiting.add(node)
+        mx = 0
+        for nb in succ[node]:
+            mx = max(mx, dfs(nb) + 1)
+        visiting.discard(node)
+        layer[node] = mx
+        return mx
+
+    for i in ids:
+        dfs(i)
+
+    max_layer = max(layer.values()) if layer else 0
+    # 按层收集节点，层内保持原顺序
+    by_layer: Dict[int, List[int]] = {}
+    for j, iid in enumerate(ids):
+        l = layer.get(iid, 0)
+        by_layer.setdefault(l, []).append(j)
+
+    pos: Dict[str, Tuple[int, int]] = {}
+    for l, js in by_layer.items():
+        for k, j in enumerate(js):
+            pos[ids[j]] = (l, k) if direction in ("LR", "RL") else (k, l)
+
+    # 给定层排序稳定，返回
+    return pos, layer
 
 
 def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
-    """计算完整布局。返回 (node_center, layers, group_bbox, lane_bbox)。"""
+    """计算完整布局。返回 (node_center, layers, groups, lanes)。"""
     nodes = ir.get("nodes", [])
+    edges = ir.get("edges", [])
     groups = {g.get("id"): g for g in ir.get("groups", [])}
     lanes = {l.get("id"): l for l in ir.get("lanes", [])}
     direction = ir.get("direction", "LR")
 
-    pos_grid, layers = _layer_positions(nodes, direction)
+    is_lr = direction in ("LR", "RL")
 
-    is_tb = direction in ("TB", "BT")
+    pos_grid, layers = _layer_positions(nodes, edges, direction)
 
-    # 按 lane 分行（泳道）
+    # 泳道顺序（保持出现顺序）
     lane_order: List[str] = []
     for nd in nodes:
         ln = nd.get("lane")
         if ln and ln not in lane_order:
             lane_order.append(ln)
 
-    node_center: Dict[str, Tuple[float, float]] = {}
-    lane_slot: Dict[str, int] = {}
-    group_slot: Dict[str, int] = {}
+    # 泳道内的节点在拓扑层的最大列数
+    
+    lane_y: Dict[str, float] = {}
+    for i, ln in enumerate(lane_order):
+        lane_y[ln] = PAD + NODE_H / 2 + i * (NODE_H + GAP_Y * 4)
 
+    # 非泳道节点按"组"纵向排
+    group_order: List[str] = []
+    for nd in nodes:
+        if nd.get("lane"):
+            continue
+        g = nd.get("group")
+        if g and g not in group_order:
+            group_order.append(g)
+
+    group_y: Dict[str, float] = {}
+    base_y = PAD + NODE_H / 2 + len(lane_order) * (NODE_H + GAP_Y * 4)
+    for i, g in enumerate(group_order):
+        group_y[g] = base_y + i * (NODE_H + GAP_Y * 1.5)
+    # 无组节点也占一行
+    no_group_y = base_y + len(group_order) * (NODE_H + GAP_Y * 2.5)
+
+    node_center: Dict[str, Tuple[float, float]] = {}
     for nd in nodes:
         nid = nd.get("id")
-        col, row = pos_grid[nid]
+        col, row = pos_grid.get(nid, (0, 0))
+        # x 轴 = 拓扑层（LR: col 是层; TB: row 是层）
+        layer_x = col if is_lr else row
+        # 层内序号（LR 用 row，TB 用 col）用于同层多节点纵向排开
+        within = row if is_lr else col
         ln = nd.get("lane")
         if ln:
-            li = lane_order.index(ln) if ln in lane_order else 0
-            lane_slot[ln] = lane_slot.get(ln, 0)
-            slot = lane_slot[ln]
-            lane_slot[ln] += 1
-            if is_tb:
-                cx = PAD + NODE_W / 2 + (slot % 2023) * 0  # placeholder
-                x = PAD + NODE_W / 2 + (slot % 4) * (NODE_W + GAP_X)
-                y = PAD + NODE_H / 2 + li * (NODE_H + GAP_Y * 3)
-            else:
-                x = PAD + NODE_W / 2 + (slot % 4) * (NODE_W + GAP_X)
-                y = PAD + NODE_H / 2 + li * (NODE_H + GAP_Y * 3)
+            y = lane_y.get(ln, PAD) + within * (NODE_H + GAP_Y)
+            x = PAD + NODE_W / 2 + layer_x * (NODE_W + GAP_X)
             node_center[nid] = (x, y)
+            continue
+        g = nd.get("group")
+        if g:
+            yg = group_y.get(g, no_group_y) + within * (NODE_H + GAP_Y)
+            x = PAD + NODE_W / 2 + layer_x * (NODE_W + GAP_X)
+            node_center[nid] = (x, yg)
         else:
-            g = nd.get("group")
-            if g and g not in group_slot:
-                group_slot[g] = len(group_slot)
-            gi = group_slot.get(g, 0)
-            if is_tb:
-                x = PAD + NODE_W / 2 + col * (NODE_W + GAP_X)
-                y = PAD + NODE_H / 2 + (gi + (row if not g else 0)) * (NODE_H + GAP_Y)
-            else:
-                x = PAD + NODE_W / 2 + (col) * (NODE_W + GAP_X)
-                y = PAD + NODE_H / 2 + (gi + (row if not g else 0)) * (NODE_H + GAP_Y * 1.5)
-            node_center[nid] = (x, y)
+            x = PAD + NODE_W / 2 + layer_x * (NODE_W + GAP_X)
+            node_center[nid] = (x, no_group_y + within * (NODE_H + GAP_Y))
 
     return node_center, layers, groups, lanes
 
