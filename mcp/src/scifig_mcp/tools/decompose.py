@@ -102,7 +102,8 @@ def _user_prompt(paper_text: str, requirement: str) -> str:
       "groups": [{{"id": "g1", "label": "输入层"}}],
       "lanes": [{{"id": "l1", "label": "阶段A"}}],
       "nodes": [
-        {{"id": "n1", "label": "...", "group": "g1", "lane": "l1",
+        {{"id": "n1", "label": "...", "desc": "一句话说明(可选，增强层次感)",
+          "group": "g1", "lane": "l1",
           "shape": "round|box|diamond|cylinder|ellipse|parallelogram|cloud",
           "icon": "关键词(细胞/membrane/DNA/protein/virus 等，生物机制图填充)"}}
       ],

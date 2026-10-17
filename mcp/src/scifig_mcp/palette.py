@@ -12,11 +12,12 @@ from typing import Dict, List
 Scheme = Dict[str, Dict[str, str]]
 
 
-def _scheme(primary, secondary, accent, neutral_bg, border, text) -> Scheme:
+def _scheme(primary, secondary, accent, neutral_bg, border, text,
+            p_stroke=None, s_stroke=None, a_stroke=None) -> Scheme:
     return {
-        "primary":   {"fill": primary,   "stroke": border, "text": text},
-        "secondary": {"fill": secondary, "stroke": border, "text": text},
-        "accent":    {"fill": accent,    "stroke": border, "text": "#ffffff"},
+        "primary":   {"fill": primary,   "stroke": p_stroke or border, "text": text},
+        "secondary": {"fill": secondary, "stroke": s_stroke or border, "text": text},
+        "accent":    {"fill": accent,    "stroke": a_stroke or border, "text": text},
         "neutral":   {"fill": neutral_bg, "stroke": border, "text": text},
         "section_bg": {"fill": neutral_bg, "stroke": border, "text": text},
         "text":      {"fill": text,       "stroke": "none",   "text": text},
@@ -60,12 +61,20 @@ PASTEL = _scheme(
     border="#8A8A8A", text="#2E2E2E",
 )
 
+# 论文高级感"浅色扁平"（低饱和填充 + 同色系深描边 + 圆角卡片）
+PAPER_SOFT = _scheme(
+    primary="#E8F1F8", secondary="#E6F4EA", accent="#FDF0E7",
+    neutral_bg="#F7F9FB", border="#8FA3B0", text="#333C44",
+    p_stroke="#4A7BA6", s_stroke="#4A8B5F", a_stroke="#C97B4A",
+)
+
 SCHEMES: Dict[str, Scheme] = {
     "okabe-ito": OKABE_ITO,
     "nature": NATURE,
     "ieee": IEEE,
     "vivid": VIVID,
     "pastel": PASTEL,
+    "paper-soft": PAPER_SOFT,
 }
 
 

@@ -118,3 +118,32 @@ def test_text_w_cjk_vs_latin():
     assert _text_w("abcd", 14) < _text_w("特征", 14) + 28
     # 混合：滚动90%分位标签 = 6 CJK*16 + 3 半角*9.6 ≈ 124.8
     assert 120 < _text_w("滚动90%分位标签", 16) < 135
+
+
+def test_paper_soft_scheme():
+    from scifig_mcp.palette import get_scheme
+    sc = get_scheme("paper-soft")
+    assert sc["primary"]["fill"] != sc["primary"]["stroke"]  # 浅填充+深描边分离
+
+
+def test_svg_uses_ortho_path_for_lr():
+    from scifig_mcp.tools.render import build_svg
+    svg = build_svg(PIPELINE, "paper-soft")
+    # LR 用折线 path + 圆角
+    assert "<path d=" in svg
+    assert " marker-end=\"url(#arrow)\"" in svg
+    assert "Q " in svg  # 圆角二次贝塞尔
+
+
+def test_svg_node_desc_renders_two_lines():
+    ir = {
+        **PIPELINE,
+        "nodes": [{"id": "n1", "label": "数据", "desc": "说明文字", "shape": "round"},
+                  {"id": "n2", "label": "模型", "shape": "box"}],
+        "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+    }
+    from scifig_mcp.tools.render import build_svg
+    svg = build_svg(ir, "paper-soft")
+    assert "说明文字" in svg
+    # 有 desc 的节点用两次小号文字（标题+说明）
+    assert 'font-size="11.5"' in svg

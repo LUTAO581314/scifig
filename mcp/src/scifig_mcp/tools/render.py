@@ -160,6 +160,63 @@ def _text_w(s: str, font_size: float) -> float:
     return sum(1.0 if ord(c) > 0x2E7F else 0.6 for c in s) * font_size
 
 
+def _column_of(x: float) -> int:
+    """LR 布局：由节点中心 x 反推所在列（拓扑层）。"""
+    return int(round((x - PAD - NODE_W / 2) / (NODE_W + GAP_X)))
+
+
+def _sgn(v: float) -> int:
+    return 1 if v > 0 else (-1 if v < 0 else 0)
+
+
+def _ortho_pts(x1: float, y1: float, x2: float, y2: float, direction: str,
+               gw: float = NODE_W, gh: float = NODE_H) -> List[Tuple[float, float]]:
+    """LR/RL 正交折线（Z 形，两处直角转弯），让连线对齐卡片进出边，避免斜穿。"""
+    if direction in ("LR", "RL"):
+        d = 1 if direction == "LR" else -1
+        sx = x1 + d * (gw / 2)
+        tx = x2 - d * (gw / 2)
+        if abs(y2 - y1) <= 2:
+            return [(sx, y1), (tx, y2)]
+        # 垂直段 x：前向边取两卡中点，反向边绕到源卡外侧
+        vx = (sx + tx) / 2 if tx > sx else sx + 60
+        return [(sx, y1), (vx, y1), (vx, y2), (tx, y2)]
+    return [(x1, y1), (x2, y2)]
+
+
+def _path_str(pts: List[Tuple[float, float]], r: float = 12) -> str:
+    """把折线点列转成带圆角的 SVG path（Q 二次贝塞尔圆角）。"""
+    if len(pts) == 1:
+        return f"M {pts[0][0]},{pts[0][1]} L {pts[0][0]+1},{pts[0][1]}"
+    parts = [f"M {pts[0][0]},{pts[0][1]}"]
+    for i in range(1, len(pts) - 1):
+        p0, p1, p2 = pts[i - 1], pts[i], pts[i + 1]
+        dx1, dy1 = _sgn(p1[0] - p0[0]), _sgn(p1[1] - p0[1])
+        dx2, dy2 = _sgn(p2[0] - p1[0]), _sgn(p2[1] - p1[1])
+        ax, ay = p1[0] - dx1 * r, p1[1] - dy1 * r
+        bx, by = p1[0] + dx2 * r, p1[1] + dy2 * r
+        parts.append(f"L {ax},{ay}")
+        parts.append(f"Q {p1[0]},{p1[1]} {bx},{by}")
+    last = pts[-1]
+    parts.append(f"L {last[0]},{last[1]}")
+    return " ".join(parts)
+
+
+def _label_center(pts: List[Tuple[float, float]]) -> Tuple[float, float]:
+    """边标签位置：取最长的水平段中点（上方留白，避开箭头）。"""
+    best = None
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        if abs(y1 - y2) < 0.5:
+            ln = abs(x2 - x1)
+            if best is None or ln > best[0]:
+                best = (ln, (x1 + x2) / 2, y1)
+    if best:
+        return best[1], best[2] - 16
+    x0, y0 = pts[0]
+    x1, y1 = pts[-1]
+    return (x0 + x1) / 2, (y0 + y1) / 2 - 16
+
+
 def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
     errors = validate_ir(ir)
     if errors:
@@ -238,7 +295,8 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
         f'<path d="M0,0 L10,5 L0,10 z" fill="{sc["arrow"]["stroke"]}"/></marker></defs>'
     )
 
-    # 边
+    # 边（LR/RL 用正交折线，TB/BT 保留直线）
+    direction = ir.get("direction", "LR")
     for e in edges:
         a = node_center.get(e.get("source"))
         b = node_center.get(e.get("target"))
@@ -246,13 +304,15 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
             continue
         x1, y1 = a
         x2, y2 = b
+        pts = _ortho_pts(x1, y1, x2, y2, direction)
         dash = ' stroke-dasharray="8,5"' if e.get("style") == "dashed" else ""
         parts.append(
-            f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
-            f'stroke="{sc["arrow"]["stroke"]}" stroke-width="2.5" marker-end="url(#arrow)"{dash}/>'
+            f'<path d="{_path_str(pts)}" fill="none" '
+            f'stroke="{sc["arrow"]["stroke"]}" stroke-width="2.2" '
+            f'stroke-linejoin="round" marker-end="url(#arrow)"{dash}/>'
         )
         if e.get("label"):
-            mx, my = (x1 + x2) / 2, (y1 + y2) / 2 - 12
+            mx, my = _label_center(pts)
             lbl = e["label"]
             lw = _text_w(lbl, 14) + 14
             parts.append(
@@ -264,10 +324,23 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                 f'fill="{sc["text"]["fill"]}">{html.escape(lbl)}</text>'
             )
 
-    # 节点
+    # 同列统一卡宽（LR：列=拓扑层；TB 不做等宽，保持原样）
+    is_lr = direction in ("LR", "RL")
+    col_w: Dict[int, float] = {}
+    for nd in nodes:
+        if not is_lr:
+            break
+        col = _column_of(node_center[nd["id"]][0])
+        lbl = nd.get("label", nd.get("id", ""))
+        w_est = max(150.0, _text_w(lbl, 16) + 30)
+        if nd.get("desc"):
+            w_est = max(w_est, _text_w(nd["desc"], 12) + 24)
+        col_w[col] = max(col_w.get(col, 0.0), w_est)
+
     for nd in nodes:
         cx, cy = node_center[nd["id"]]
         label = nd.get("label", nd.get("id", ""))
+        desc = nd.get("desc", "")
         shape = nd.get("shape", "round")
         fill = sc["primary"]["fill"]
         stroke = sc["primary"]["stroke"]
@@ -276,20 +349,23 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
             fill = sc["secondary"]["fill"]
             stroke = sc["secondary"]["stroke"]
         has_icon = False
+        svg_txt = ""
         if iconlib is not None and nd.get("icon"):
             entry = iconlib.resolve_icon(nd["icon"])
             if entry:
                 try:
                     svg_txt = iconlib.fetch_icon_svg(entry, as_text=True)
-                    if svg_txt:
-                        has_icon = True
+                    has_icon = bool(svg_txt)
                 except Exception:
                     has_icon = False
-        w = max(140, _text_w(label, 16) + 30)
-        # 有图标时盒子略高，顶部放图标
-        parts += _node_svg(shape, cx, cy, w, NODE_H, fill, stroke, label, sc, has_icon)
+        if is_lr:
+            w = int(col_w.get(_column_of(cx), 150))
+        else:
+            w = max(140, int(_text_w(label, 16) + 30))
+        parts += _node_svg(shape, cx, cy, w, NODE_H, fill, stroke, label, sc,
+                           has_icon=has_icon, desc=desc)
         if has_icon and iconlib is not None:
-            parts.append(_icon_inline_svg(svg_txt, cx, cy - NODE_H / 2 + 13, sc))
+            parts.append(_icon_inline_svg(svg_txt, cx, cy - NODE_H / 2 + 11, sc))
 
     # 标题
     if ir.get("title"):
@@ -303,41 +379,59 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
 
 
 def _node_svg(shape: str, cx: float, cy: float, w: float, h: float,
-              fill: str, stroke: str, label: str, sc, has_icon: bool = False) -> str:
+              fill: str, stroke: str, label: str, sc, has_icon: bool = False,
+              desc: str = "") -> str:
     x = cx - w / 2
     y = cy - h / 2
     lbl = html.escape(label)
     parts = []
     if shape == "box":
-        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" '
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
     elif shape == "diamond":
         x1, y1, x2, y2, x3, y3, x4, y4 = cx, y, x, cy, cx, y + h, cx + w, cy
         parts.append(f'<polygon points="{x1},{y1} {x2},{y2} {x3},{y3} {x4},{y4}" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
     elif shape == "cylinder":
-        parts.append(f'<rect x="{x}" y="{y+8}" width="{w}" height="{h-8}" rx="4" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+        parts.append(f'<rect x="{x}" y="{y+8}" width="{w}" height="{h-8}" rx="6" '
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
         parts.append(f'<ellipse cx="{cx}" cy="{y+8}" rx="{w/2}" ry="{9}" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
     elif shape == "ellipse":
         parts.append(f'<ellipse cx="{cx}" cy="{cy}" rx="{w/2}" ry="{h/2}" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
     elif shape == "parallelogram":
-        parts.append(f'<polygon points="{x+14},{y} {x+w},{y} {x+w-14},{y+h} {x},{y+h}" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+        sk = 16
+        parts.append(f'<polygon points="{x+sk},{y} {x+w},{y} {x+w-sk},{y+h} {x},{y+h}" '
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
     elif shape == "cloud":
-        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="28" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2" stroke-dasharray="6,4"/>')
+        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="22" '
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6" stroke-dasharray="6,4"/>')
     else:  # round
-        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" '
-                     f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
-    # 有图标时 label 下移，给顶部图标留空间
-    label_y = cy + 16 if has_icon else cy + 5
-    parts.append(
-        f'<text x="{cx}" y="{label_y}" text-anchor="middle" font-size="16" '
-        f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
-    )
+        parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" '
+                     f'fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>')
+    # 文字层级：图标在顶部，标题粗体居中，desc 灰色小字在下
+    dsc = html.escape(desc) if desc else ""
+    if dsc:
+        title_y = cy - 11 if has_icon else cy - 2
+        parts.append(
+            f'<text x="{cx}" y="{title_y}" text-anchor="middle" font-size="15" '
+            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
+        )
+        parts.append(
+            f'<text x="{cx}" y="{title_y + 18}" text-anchor="middle" font-size="11.5" '
+            f'fill="{sc["neutral"]["stroke"]}">{dsc}</text>'
+        )
+    elif has_icon:
+        parts.append(
+            f'<text x="{cx}" y="{cy + 16}" text-anchor="middle" font-size="16" '
+            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
+        )
+    else:
+        parts.append(
+            f'<text x="{cx}" y="{cy + 6}" text-anchor="middle" font-size="16" '
+            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
+        )
     return parts
 
 
@@ -430,41 +524,46 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             continue
         x1, y1 = a
         x2, y2 = b
+        direction = ir.get("direction", "LR")
+        pts = _ortho_pts(x1, y1, x2, y2, direction)
 
-        # 缩短线端到节点边缘（减少箭头侵入节点），并计算箭头方向
-        dx, dy = x2 - x1, y2 - y1
-        length = sqrt(dx * dx + dy * dy) or 1.0
-        # 从目标中心回退到目标节点边缘（约半高20px）
-        shrink = 34.0
-        ex = x2 - dx / length * shrink
-        ey = y2 - dy / length * shrink
-
-        conn = slide.shapes.add_connector(
-            MSO_CONNECTOR.STRAIGHT,
-            ox + Inches(x1 / MM), oy + Inches(y1 / MM),
-            ox + Inches(ex / MM), oy + Inches(ey / MM),
-        )
-        conn.line.color.rgb = _hex_to_rgb(sc["arrow"]["stroke"])
-        conn.line.width = Pt(2.25)
-        if e.get("style") == "dashed":
-            try:
-                from pptx.oxml.ns import qn
-                lnEl = conn.line._get_or_add_ln()
-                d = lnEl.makeelement(qn('a:prstDash'), {'val': 'dash'})
-                lnEl.append(d)
-            except Exception:
-                pass
-
-        # 末端箭头（指向 (dx,dy) 方向）
-        angle = degrees(atan2(dy, dx))
-        _arrow_head(ex, ey, angle, sc["arrow"]["stroke"])
+        # 每段一条直线连接线；末端段加箭头
+        for k in range(len(pts) - 1):
+            ax, ay = pts[k]
+            bx, by = pts[k + 1]
+            is_last = (k == len(pts) - 2)
+            conn = slide.shapes.add_connector(
+                MSO_CONNECTOR.STRAIGHT,
+                ox + Inches(ax / MM), oy + Inches(ay / MM),
+                ox + Inches(bx / MM), oy + Inches(by / MM),
+            )
+            conn.line.color.rgb = _hex_to_rgb(sc["arrow"]["stroke"])
+            conn.line.width = Pt(2.2)
+            if e.get("style") == "dashed":
+                try:
+                    from pptx.oxml.ns import qn
+                    lnEl = conn.line._get_or_add_ln()
+                    d = lnEl.makeelement(qn('a:prstDash'), {'val': 'dash'})
+                    lnEl.append(d)
+                except Exception:
+                    pass
+            # 终点收缩到卡片边缘，再画箭头
+            if is_last:
+                dx, dy = bx - ax, by - ay
+                length = sqrt(dx * dx + dy * dy) or 1.0
+                ex = bx - dx / length * 10
+                ey = by - dy / length * 10
+                angle = degrees(atan2(dy, dx))
+                _arrow_head(ex, ey, angle, sc["arrow"]["stroke"])
 
         if e.get("label"):
-            mx = ox + Inches(((x1 + x2) / 2 - 35) / MM)
-            my = oy + Inches(((y1 + y2) / 2 - 12) / MM)
-            tb = slide.shapes.add_textbox(mx, my, Inches(1.4), Inches(0.4))
+            mx, my = _label_center(pts)
+            tb = slide.shapes.add_textbox(
+                ox + Inches((mx - 55) / MM), oy + Inches((my - 16) / MM),
+                Inches(1.9), Inches(0.4))
             tf = tb.text_frame
             tf.text = e["label"]
+            tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             tf.paragraphs[0].font.size = Pt(11)
             tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 
@@ -473,8 +572,9 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         cx, cy = node_center[nd["id"]]
         label = nd.get("label", nd.get("id", ""))
         shape = nd.get("shape", "round")
-        w = max(1.9, len(label) * 0.14 + 0.5)
-        h = 0.9
+        is_group = bool(nd.get("group"))
+        h = 1.0 if nd.get("desc") else 0.9
+        w = max(2.0 if nd.get("desc") else 1.9, len(label) * 0.14 + 0.5)
         from pptx.enum.shapes import MSO_SHAPE
         kind = {
             "box": MSO_SHAPE.RECTANGLE,
@@ -491,18 +591,41 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             oy + Inches((cy - h * 72 / 2) / MM),
             Inches(w), Inches(h),
         )
-        fill = sc["secondary"]["fill"] if nd.get("group") else sc["primary"]["fill"]
+        fill = sc["secondary"]["fill"] if is_group else sc["primary"]["fill"]
+        stroke = sc["secondary"]["stroke"] if is_group else sc["primary"]["stroke"]
         sp.fill.solid()
         sp.fill.fore_color.rgb = _hex_to_rgb(fill)
-        sp.line.color.rgb = _hex_to_rgb(sc["primary"]["stroke"])
-        sp.line.width = Pt(2)
+        sp.line.color.rgb = _hex_to_rgb(stroke)
+        sp.line.width = Pt(1.6)
         tf = sp.text_frame
-        tf.text = label
-        for p in tf.paragraphs:
-            p.alignment = PP_ALIGN.CENTER
-            p.font.size = Pt(14)
-            p.font.bold = True
-            p.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
+        tf.word_wrap = True
+        try:
+            tf.margin_left = Inches(0.05)
+            tf.margin_right = Inches(0.05)
+            tf.margin_top = Inches(0.02)
+            tf.margin_bottom = Inches(0.02)
+        except Exception:
+            pass
+        if nd.get("desc"):
+            tf.text = label
+            p0 = tf.paragraphs[0]
+            p0.alignment = PP_ALIGN.CENTER
+            p0.font.size = Pt(13)
+            p0.font.bold = True
+            p0.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
+            p1 = tf.add_paragraph()
+            p1.text = nd["desc"]
+            p1.alignment = PP_ALIGN.CENTER
+            p1.font.size = Pt(9)
+            p1.font.bold = False
+            p1.font.color.rgb = _hex_to_rgb(sc["neutral"]["stroke"])
+        else:
+            tf.text = label
+            for p in tf.paragraphs:
+                p.alignment = PP_ALIGN.CENTER
+                p.font.size = Pt(14)
+                p.font.bold = True
+                p.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 
         # 可选：节点图标（SVG→PNG 嵌入节点顶部）
         if iconlib is not None and nd.get("icon"):
