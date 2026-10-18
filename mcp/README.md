@@ -162,3 +162,9 @@ def register_scifig_plugins(registry):
 `document_parser`、`planner`、`auditor`、`render_svg`、`render_pptx`、
 `render_png`、`render_pdf`、`render_emf` 和 `vision_qa`。工作流结果会返回
 `plugins` 字段，记录本次实际使用的实现来源。
+
+### 参考图版式
+
+Diagram IR 节点可选提供 `position: {"x": 180, "y": 240}`。当所有节点都提供
+坐标时，渲染器使用手工版式，适合“中心主流程 + 侧边评价/反馈模块”的论文图；
+未提供完整坐标时仍使用自动拓扑布局。
