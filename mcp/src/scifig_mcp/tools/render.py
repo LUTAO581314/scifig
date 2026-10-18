@@ -469,6 +469,30 @@ def render_to_svg(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") 
     return out_path
 
 
+def render_to_png(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
+    """把 SVG 渲染为 PNG 预览图；PNG 不作为可编辑主格式。"""
+    out_path = _ensure_ext(out_path, ".png")
+    try:
+        import cairosvg  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("PNG 渲染需要 cairosvg: pip install cairosvg") from exc
+    svg = build_svg(ir, scheme)
+    cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=out_path, output_width=1800)
+    return out_path
+
+
+def render_to_pdf(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
+    """把 SVG 转为 PDF；PDF 用于投稿/预览，编辑主格式仍是 SVG/PPTX。"""
+    out_path = _ensure_ext(out_path, ".pdf")
+    try:
+        import cairosvg  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("PDF 渲染需要 cairosvg: pip install cairosvg") from exc
+    svg = build_svg(ir, scheme)
+    cairosvg.svg2pdf(bytestring=svg.encode("utf-8"), write_to=out_path)
+    return out_path
+
+
 def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
     """生成原生可编辑 PPTX（python-pptx）：每个节点一个形状、每条边一根连接线。"""
     out_path = _ensure_ext(out_path, ".pptx")

@@ -1,30 +1,38 @@
 # SciFig MCP Server
 
-论文解析 → 拆解 → 可编辑科研图（SVG + EMF）的 MCP 工具集。
+论文解析 → 拆解 → 用户确认 → 审计 → 可编辑科研图（SVG/PPTX/PDF/PNG/EMF）的 MCP 工具集。
 
 ## 工具
 
 | 工具 | 说明 |
 |------|------|
-| `parse_paper` | PDF → 结构化 markdown（复用 MinerU / pdfplumber） |
+| `prepare_figure` | 高层入口：解析文档、生成 Diagram IR 草稿、校验并返回证据来源 |
+| `render_confirmed_figure` | 确认后的 IR → SVG/PPTX/PDF/PNG/EMF + 视觉质检建议 |
+| `parse_document` | PDF/DOCX/DOC → 结构化 markdown + 图表/公式多模态解析 |
+| `parse_paper` | `parse_document` 的 PDF 兼容别名 |
 | `decompose` | 论文文本 + 需求 → Diagram IR JSON（LLM 拆解，含 locks） |
 | `validate_ir_tool` | 校验 Diagram IR 合法可渲染 |
 | `audit_ir_tool` | 确定性质量审计（passed 闸门） |
 | `render_svg` | Diagram IR → SVG 文件 |
 | `render_pptx` | Diagram IR → 原生可编辑 PPTX（python-pptx 形状/连接线） |
 | `render_emf` | Diagram IR → EMF 文件（预览） |
+| `figure_qa` | Diagram IR → PNG + 多模态视觉质量检查 |
 | `export_spec` | IR → 带 LOCKED 标记文本（锁定重生成） |
 
 ## 安装
 
 ```bash
-pip install -e .
+pip install -e .[all]
 ```
 
 可选依赖：
 - 解析：`pip install pdfplumber`（轻量）或 `pip install mineru`（高精度）
+- 页面视觉解析：`pip install pymupdf openai`（需要支持图片输入的多模态模型）
+- Word 结构化解析：`pip install python-docx`
+- Word 页面视觉解析：安装 LibreOffice（用于 DOCX → PDF 页面渲染）
 - PPTX 可编辑输出：`pip install python-pptx`
 - EMF 预览：`pip install cairosvg pillow`
+- PNG/PDF：`pip install cairosvg`
 
 ## 配置（国内模型，OpenAI 兼容）
 
@@ -56,6 +64,12 @@ SCIFIG_LLM_BASE=https://newapi.ai.gduf.top/v1
 SCIFIG_LLM_KEY=sk-xxxx
 SCIFIG_LLM_MODEL=deepseek-v4-flash
 SCIFIG_LLM_STREAM=1            # 流式（部分 VLLM 网关必要）
+
+# 多模态模型（推荐单独指定；不填 BASE/KEY 时复用 SCIFIG_LLM_*）
+SCIFIG_VISION_BASE=https://api.openai.com/v1
+SCIFIG_VISION_KEY=sk-xxxx
+SCIFIG_VISION_MODEL=gpt-4o
+SCIFIG_PARSE_VISION_MAX_PAGES=12
 ```
 
 或直接用环境变量注入（MCP 通过 env 传入，优先于 .env）。
@@ -114,4 +128,26 @@ render_to_svg(ir, "demo.svg")
 
 > 需先把 `mcp/` 加入 Python 路径（`cd mcp && pip install -e .`），或用绝对模块路径。
 
-配合 `skill/` 目录使用，按四阶段工作流执行（解析 → 拆解确认 → 审计 → 出图）。
+配合 `skill/` 目录使用，按四阶段工作流执行（文本+视觉解析 → 拆解确认 → 审计 → 出图）。
+
+## 外部插件适配
+
+SciFig 不要求把第三方仓库复制进核心代码。将适配器做成普通 Python 模块，
+通过 `SCIFIG_PLUGIN_MODULES` 加载即可：
+
+```python
+# my_scifig_plugins.py
+def register_scifig_plugins(registry):
+    from my_docling_adapter import parse_document
+    from my_elk_adapter import render_svg
+    return registry.override(
+        document_parser=parse_document,
+        render_svg=render_svg,
+        _source=__name__,
+    )
+```
+
+也可以直接导出 `PLUGIN_OVERRIDES = {"render_svg": render_svg}`。可替换槽位包括
+`document_parser`、`planner`、`auditor`、`render_svg`、`render_pptx`、
+`render_png`、`render_pdf`、`render_emf` 和 `vision_qa`。工作流结果会返回
+`plugins` 字段，记录本次实际使用的实现来源。

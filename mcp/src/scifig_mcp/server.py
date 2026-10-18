@@ -1,15 +1,19 @@
 """SciFig MCP server：论文解析 → 拆解(IR) → 可编辑科研图(SVG/PPTX/EMF)。
 
 工具清单：
-- parse_paper    : PDF → 结构化 markdown（可选，复用 MinerU）
+- prepare_figure  : 高层入口，文档解析 → 图示规划 → 校验 → 待确认草稿
+- render_confirmed_figure: 确认后的 IR → 可编辑产物 + 视觉质检建议
+- parse_document : PDF/DOCX/DOC → 结构化 markdown + 多模态图表解析
+- parse_paper    : parse_document 的 PDF 兼容别名
 - decompose      : 论文文本 + 需求 → Diagram IR JSON（LLM 拆解，含 locks）
 - validate_ir    : 校验 Diagram IR 是否合法可渲染
 - audit_ir       : 确定性质量审计（越界/密度/孤立节点等），passed gate
 - render_svg     : Diagram IR → SVG 文件
 - render_pptx    : Diagram IR → PPTX 文件（python-pptx 原生可编辑形状/连接线）
+- render_png/pdf : Diagram IR → PNG/PDF 预览或投稿文件
 - render_emf     : Diagram IR → EMF 文件（预览）
-- figure_qa      : 视觉质检（本地 Ollama VL 模型）：渲染→严格五项检查→问题清单
-- vision_describe: 让本地 VL 模型读任意本地图并回答（深检）
+- figure_qa      : 视觉质检（OpenAI 兼容多模态模型）：渲染→严格五项检查→问题清单
+- vision_describe: 让多模态模型读任意本地图并回答（深检）
 """
 
 from __future__ import annotations
@@ -24,12 +28,16 @@ from scifig_mcp.diagram_ir import validate_ir, ir_to_json
 from scifig_mcp.llm.provider import get_llm
 from scifig_mcp.tools.audit import audit_ir
 from scifig_mcp.tools.decompose import decompose_paper
-from scifig_mcp.tools.parse import parse_paper_file
+from scifig_mcp.tools.parse import parse_document_file
 from scifig_mcp.tools.render import render_to_svg, render_to_pptx, render_to_emf
+from scifig_mcp.plugins import load_registry
+from scifig_mcp.workflow import FigureWorkflow, workflow_json
 
 mcp = FastMCP("scifig-mcp")
 
 OUT_DIR = Path(os.environ.get("SCIFIG_OUT_DIR", "./loot")).resolve()
+# 可通过 SCIFIG_PLUGIN_MODULES 注入外部仓库适配器，默认使用内置实现。
+WORKFLOW = FigureWorkflow(load_registry())
 
 
 def _out(name: str, ext: str) -> Path:
@@ -39,20 +47,71 @@ def _out(name: str, ext: str) -> Path:
 
 
 @mcp.tool()
-def parse_paper(pdf_path: str, tier: str = "basic") -> str:
-    """把 PDF 论文解析成结构化 markdown（标题/摘要/方法/图表/公式）。
+def parse_document(document_path: str, tier: str = "basic", visual: bool = True) -> str:
+    """把 PDF/DOCX/DOC 文档解析成结构化 markdown，并用多模态模型识别图表/公式。
 
     Args:
-        pdf_path: 论文 PDF 的绝对路径
+        document_path: PDF、DOCX 或 DOC 文档的绝对路径
         tier: 解析质量 flash/basic/standard/advanced（默认 basic）
+        visual: 是否启用页面截图的多模态解析（默认 True）
     Returns:
         结构化 markdown 文本（写入 loot/, 返回路径+摘要）
     """
-    text, meta = parse_paper_file(pdf_path, tier=tier)
+    text, meta = parse_document_file(document_path, tier=tier, visual=visual)
     out = OUT_DIR / "parsed" / f"{meta.get('stem','paper')}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     return json.dumps({"path": str(out), "chars": len(text), "meta": meta}, ensure_ascii=False)
+
+
+@mcp.tool()
+def parse_paper(pdf_path: str, tier: str = "basic", visual: bool = True) -> str:
+    """兼容旧调用名；新代码请使用 parse_document。"""
+    return parse_document(pdf_path, tier=tier, visual=visual)
+
+
+@mcp.tool()
+def prepare_figure(document_path: str, requirement: str = "",
+                   tier: str = "basic", visual: bool = True) -> str:
+    """高层工作流：解析 PDF/DOCX/DOC 并生成待确认的科研图草稿。
+
+    该工具只返回结构化草稿、证据来源和审计结果，不渲染最终图。ChatGPT
+    应先向用户展示 ``figures[*].ir``，用户确认后再调用
+    ``render_confirmed_figure``。
+    """
+    result = WORKFLOW.prepare(
+        document_path=document_path,
+        requirement=requirement,
+        tier=tier,
+        visual=visual,
+        artifact_dir=str(OUT_DIR / "prepared"),
+    )
+    return workflow_json(result)
+
+
+@mcp.tool()
+def render_confirmed_figure(ir: dict, confirmed: bool = False,
+                            out_name: str = "figure",
+                            formats: list[str] | None = None,
+                            scheme: str = "okabe-ito", qa: bool = True,
+                            question: str = "", context: str = "") -> str:
+    """高层工作流：确认 Diagram IR 后生成可编辑产物并返回质检建议。
+
+    ``confirmed`` 必须由用户明确确认后设为 true；未确认或审计失败时不会
+    写入最终产物。默认输出 SVG、PPTX、PNG，也支持 EMF/PDF。
+    """
+    result = WORKFLOW.render_confirmed(
+        ir=ir,
+        confirmed=confirmed,
+        out_dir=str(OUT_DIR / "figures"),
+        out_name=out_name,
+        formats=formats,
+        scheme=scheme,
+        qa=qa,
+        question=question,
+        context=context,
+    )
+    return workflow_json(result)
 
 
 @mcp.tool()
@@ -159,7 +218,7 @@ def export_spec(ir: dict) -> str:
 @mcp.tool()
 def figure_qa(ir: dict, question: str = "", context: str = "",
               scheme: str = "okabe-ito", out_name: str = "figure") -> str:
-    """视觉质检（本地 Ollama 视觉模型）：渲染 IR 成 PNG 后严格检查，返回问题清单。
+    """视觉质检（OpenAI 兼容多模态模型）：渲染 IR 成 PNG 后严格检查，返回问题清单。
 
     默认执行发表质量五项：数据流方向/连线连接与交叉/文字截断出框/
     标题与分组标签可读性/距发表质量的差距。有问题先修 IR 或渲染，再复检。
@@ -182,7 +241,7 @@ def figure_qa(ir: dict, question: str = "", context: str = "",
 @mcp.tool()
 def vision_describe(image_path: str, question: str = "请详细描述这张图的内容",
                     context: str = "") -> str:
-    """让本地视觉模型直接读一张本地图并回答问题（深检任意图，含论文原图）。
+    """让多模态模型直接读一张本地图并回答问题（深检任意图，含论文原图）。
 
     Args:
         image_path: 本地图片绝对路径（png/jpg）

@@ -1,4 +1,4 @@
-"""vision 质检模块测试（monkeypatch _chat，不依赖 ollama 存活）。"""
+"""vision 模块测试（monkeypatch _chat，不依赖远程模型存活）。"""
 
 import pytest
 
@@ -68,7 +68,7 @@ def test_figure_qa_unreachable_raises_runtimeerror(monkeypatch):
         raise ConnectionError("refused")
 
     monkeypatch.setattr(vision, "_chat", fake)
-    with pytest.raises(RuntimeError, match="本地视觉模型不可用"):
+    with pytest.raises(RuntimeError, match="多模态模型不可用"):
         figure_qa(SAMPLE)
 
 

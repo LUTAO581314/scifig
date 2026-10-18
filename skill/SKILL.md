@@ -1,11 +1,11 @@
 ---
 name: scifig
-description: 将学术论文(上传PDF+需求)拆解为可编辑科研图(机制图/流程图/架构图/示意图),输出原生可编辑 PPTX+SVG+EMF,覆盖全论文类型。
+description: 将学术论文(上传PDF/DOCX/DOC+需求)拆解为可编辑科研图(机制图/流程图/架构图/示意图),输出原生可编辑 PPTX+SVG，并提供 PNG/PDF/EMF 预览。
 ---
 
 # SciFig：论文拆解 → 可编辑科研图
 
-把一篇学术论文 + 一个作图需求，变成**可编辑矢量科研图**（SVG + EMF），全程四阶段。
+把一篇学术论文 + 一个作图需求，变成**可编辑矢量科研图**（SVG/PPTX），全程经过解析、规划、确认、审计和质检。
 
 ## 核心原则
 
@@ -17,16 +17,21 @@ description: 将学术论文(上传PDF+需求)拆解为可编辑科研图(机制
 
 ### 阶段0 输入
 用户提供：
-- 论文 PDF 路径（或已解析文本）
+- 论文 PDF / DOCX / DOC 路径（或已解析文本）
 - 作图需求描述（"画机制图/流程图/架构图/示意图…"，或"把第X方法画成图"）
 
-### 阶段1 解析（调用 MCP 工具 `parse_paper`）
-- PDF → 结构化文本（标题/摘要/方法/图表/参考文献/公式）
+### 阶段1-2 解析与规划（优先调用 MCP 工具 `prepare_figure`）
+- 高层工具会串联 `parse_document` + `decompose`，一次返回论文类型、证据来源、候选 Diagram IR 和审计结果
+- 需要单独调试时再分别调用 `parse_document`、`decompose`
+- PDF / DOCX / DOC → 结构化文本（标题/摘要/方法/图表/参考文献/公式）
+- DOCX 优先读取段落、标题、表格和嵌入图片；安装 LibreOffice 后再补充页面级视觉解析
+- 同步提取含图表标题的页面截图，交给**已配置的多模态模型**识别图、表、公式和视觉关系，结果追加到解析 markdown
+- 多模态模型通过 `SCIFIG_VISION_BASE/KEY/MODEL` 配置；未单独配置时复用 `SCIFIG_LLM_BASE/KEY/MODEL`
 - 输出 markdown + 图位置定位
 - 若已直接给文本，可跳过
 - 若用户把 PDF 作为**附件**发来（模型可能无法直接读 PDF），先定位其文件路径再调 `parse_paper`，不要把 PDF 内容硬喂给 LLM
 
-### 阶段2 拆解（核心，调用 `decompose` + LLM）
+### 阶段2 拆解（核心，调用 `decompose` + LLM；或由 `prepare_figure` 编排）
 用"分类决策树"拆解，产出结构：
 1. **论文类型分类**：见 `references/paper-types.md`（方法/机制/评测/综述/理论/工程/数据）
 2. **识别可作图信息**：流程 / 机制 / 架构 / 对比 / 结构 / 数据等
@@ -41,19 +46,18 @@ description: 将学术论文(上传PDF+需求)拆解为可编辑科研图(机制
 - 对确认后的 Diagram IR 做**确定性质量审计**（信息密度/越界/孤立节点/空标签/空分组）
 - 必须 `passed == True`（无 hard 失败）才允许出图；有 hard 失败先修复 IR
 
-### 阶段4 出图（调用 `render_pptx` / `render_svg` / `render_emf`）
-- 把确认+审计通过的 Diagram IR → 渲染成 **PPTX + SVG + EMF**
+### 阶段4 出图（优先调用 `render_confirmed_figure`）
+- 把确认+审计通过的 Diagram IR → 渲染成 **PPTX + SVG + PNG/PDF/EMF**
+- 低级调试时再分别调用 `render_pptx` / `render_svg` / `render_emf`
 - PPTX 是原生可编辑 OOXML 形状/连接线，PPT 内直接编辑，无需"转换为形状"
 - 遵循 `references/design-theory.md` 配色/排版/层次规范
-- **视觉自检（必做，调用 `figure_qa`）**：本地 Ollama 视觉模型对渲染出的图自动质检——
+- **视觉自检（必做，调用 `figure_qa`）**：使用已配置的 OpenAI 兼容多模态模型对渲染出的图自动质检——
   方向/连线/截断/标签/发表质量五项，带 `context`（论文背景）提高判断准确性；
   有问题先修 IR 或渲染，复检通过再交付。
-- **深检（可选，模型切换共享上下文法）**：需要人自己看图时，用户在 opencode 里 `/models`
-  切到 `ollama-vl/qwen2.5vl:7b`，附 PNG 让它直接读图（带全部会话上下文），看完切回原模型。
-  注意 ollama 需带 `OLLAMA_CONTEXT_LENGTH=16384` 启动（已持久化到用户环境变量）。
+- **深检（可选）**：调用 `vision_describe` 让同一个多模态模型读取论文原图或本地 PNG，避免切换到单独的本地视觉服务。
 
 ### 阶段5 交付
-- 输出：PPTX、SVG、预览、图注建议
+- 输出：PPTX、SVG、PNG/PDF 预览、质检结果、图注建议和证据来源
 - 说明如何在 PPT/Word 中编辑各元素
 
 ## 交互要求

@@ -58,6 +58,16 @@ class LLM:
         return "".join(parts)
 
 
+@dataclass(frozen=True)
+class ModelConfig:
+    """一个文本或多模态模型端点的运行配置。"""
+
+    base: str
+    key: str
+    model: str
+    provider: str = ""
+
+
 _DEFAULTS = {
     "qwen": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-max"),
     "glm": ("https://open.bigmodel.cn/api/paas/v4", "glm-4"),
@@ -66,25 +76,54 @@ _DEFAULTS = {
 }
 
 
-def get_llm() -> LLM:
-    if OpenAI is None:
-        raise RuntimeError("需要安装 openai 库: pip install openai")
+def get_model_config(kind: str = "text") -> ModelConfig:
+    """读取文本或多模态模型配置。
 
-    provider = os.environ.get("SCIFIG_LLM_PROVIDER", "").lower()
-    base = os.environ.get("SCIFIG_LLM_BASE")
-    key = os.environ.get("SCIFIG_LLM_KEY")
-    model = os.environ.get("SCIFIG_LLM_MODEL")
+    多模态模型优先读取 ``SCIFIG_VISION_*``，缺省时复用统一的
+    ``SCIFIG_LLM_*`` 配置。这样论文图表解析、视觉质检和文本拆解可以
+    使用同一个 OpenAI 兼容网关，也允许视觉模型单独切换。
+    """
+    if kind not in {"text", "multimodal"}:
+        raise ValueError(f"不支持的模型类型: {kind}")
+
+    if kind == "multimodal":
+        provider = (os.environ.get("SCIFIG_VISION_PROVIDER")
+                    or os.environ.get("SCIFIG_LLM_PROVIDER", "")).lower()
+        base = (os.environ.get("SCIFIG_VISION_BASE")
+                or os.environ.get("SCIFIG_LLM_BASE"))
+        key = (os.environ.get("SCIFIG_VISION_KEY")
+               or os.environ.get("SCIFIG_LLM_KEY"))
+        model = (os.environ.get("SCIFIG_VISION_MODEL")
+                 or os.environ.get("SCIFIG_LLM_VISION_MODEL")
+                 or os.environ.get("SCIFIG_LLM_MODEL"))
+    else:
+        provider = os.environ.get("SCIFIG_LLM_PROVIDER", "").lower()
+        base = os.environ.get("SCIFIG_LLM_BASE")
+        key = os.environ.get("SCIFIG_LLM_KEY")
+        model = os.environ.get("SCIFIG_LLM_MODEL")
 
     if provider and not (base and model):
         dbase, dmodel = _DEFAULTS.get(provider, (base, model))
         base = base or dbase
-        model = model or dmodel
+        # 文本模型的默认名不能安全地当作视觉模型使用；多模态模型
+        # 必须显式指定，除非用户已经通过 SCIFIG_LLM_MODEL 复用它。
+        if kind == "text":
+            model = model or dmodel
 
     if not base or not key or not model:
+        prefix = "SCIFIG_VISION_* 或 SCIFIG_LLM_*" if kind == "multimodal" else "SCIFIG_LLM_*"
         raise RuntimeError(
-            "缺少 LLM 配置。请设置 SCIFIG_LLM_BASE / SCIFIG_LLM_KEY / SCIFIG_LLM_MODEL "
-            "或 SCIFIG_LLM_PROVIDER=qwen|glm|deepseek|openai (+SCIFIG_LLM_KEY)"
+            f"缺少{('多模态' if kind == 'multimodal' else '文本')}模型配置。"
+            f"请设置 {prefix}（base/key/model）。"
         )
 
-    client = OpenAI(base_url=base, api_key=key)
-    return LLM(client=client, model=model)
+    return ModelConfig(base=base, key=key, model=model, provider=provider)
+
+
+def get_llm() -> LLM:
+    if OpenAI is None:
+        raise RuntimeError("需要安装 openai 库: pip install openai")
+
+    cfg = get_model_config("text")
+    client = OpenAI(base_url=cfg.base, api_key=cfg.key)
+    return LLM(client=client, model=cfg.model)
