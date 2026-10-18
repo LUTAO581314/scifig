@@ -98,6 +98,7 @@ def test_confirmed_render_returns_editable_outputs_and_qa_suggestions(tmp_path):
     registry, calls = _registry(tmp_path, qa=RuntimeError("vision unavailable"))
     result = FigureWorkflow(registry).render_confirmed(
         IR, confirmed=True, out_dir=str(tmp_path), formats=["svg", "pptx", "png"],
+        qa_mode="mcp",
     )
 
     assert result["status"] == "complete"
@@ -106,3 +107,14 @@ def test_confirmed_render_returns_editable_outputs_and_qa_suggestions(tmp_path):
     assert result["qa"]["status"] == "unavailable"
     assert result["suggestions"]
     assert calls == [".svg", ".pptx", ".png"]
+
+
+def test_codex_qa_is_delegated_without_vision_api(tmp_path):
+    registry, calls = _registry(tmp_path)
+    result = FigureWorkflow(registry).render_confirmed(
+        IR, confirmed=True, out_dir=str(tmp_path), formats=["svg"],
+    )
+
+    assert result["status"] == "complete"
+    assert result["qa"]["status"] == "delegated"
+    assert result["qa"]["mode"] == "codex"

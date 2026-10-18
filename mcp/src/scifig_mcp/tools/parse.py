@@ -27,8 +27,18 @@ _VISUAL_HINTS = re.compile(
 )
 
 
+def _pdf_backend():
+    """优先使用新版 pymupdf，避免旧版 fitz 在 MCP stdout 输出警告。"""
+    try:
+        import pymupdf  # type: ignore
+        return pymupdf
+    except ImportError:
+        import fitz  # type: ignore
+        return fitz
+
+
 def parse_paper_file(pdf_path: str, tier: str = "basic",
-                     visual: bool = True) -> tuple[str, dict]:
+                     visual: bool = True, vision_mode: str = "mcp") -> tuple[str, dict]:
     """解析 PDF 论文为结构化文本。
 
     Args:
@@ -42,14 +52,18 @@ def parse_paper_file(pdf_path: str, tier: str = "basic",
     if not p.exists():
         raise FileNotFoundError(f"找不到 PDF: {p}")
 
-    # 优先尝试高精度解析(MinerU)；失败（未装/模型下载问题/时报错）回退轻量 pdfplumber
-    try:
-        import mineru  # noqa: F401
-        if "parse" not in dir(mineru):
-            raise ImportError("mineru 无 parse API")
-        text, meta = _parse_with_mineru(p, tier)
-    except Exception:
+    # Codex 模式禁止 MinerU 自动启动本地 VLM；只走确定性的轻量文本解析。
+    if vision_mode == "codex":
         text, meta = _parse_lightweight(p)
+    else:
+        # 优先尝试高精度解析(MinerU)；失败（未装/模型下载问题/时报错）回退轻量 pdfplumber
+        try:
+            import mineru  # noqa: F401
+            if "parse" not in dir(mineru):
+                raise ImportError("mineru 无 parse API")
+            text, meta = _parse_with_mineru(p, tier)
+        except Exception:
+            text, meta = _parse_lightweight(p)
 
     if visual:
         text, visual_meta = _augment_with_visuals(p, text)
@@ -60,7 +74,7 @@ def parse_paper_file(pdf_path: str, tier: str = "basic",
 
 
 def parse_document_file(document_path: str, tier: str = "basic",
-                        visual: bool = True) -> tuple[str, dict]:
+                        visual: bool = True, vision_mode: str = "mcp") -> tuple[str, dict]:
     """按扩展名解析 PDF、DOCX 或旧版 DOC 文档。
 
     DOCX 同时走结构化 XML 解析和可选的页面渲染；没有 LibreOffice 时，
@@ -71,11 +85,12 @@ def parse_document_file(document_path: str, tier: str = "basic",
         raise FileNotFoundError(f"找不到文档: {p}")
     suffix = p.suffix.lower()
     if suffix == ".pdf":
-        return parse_paper_file(str(p), tier=tier, visual=visual)
+        return parse_paper_file(str(p), tier=tier, visual=visual,
+                                vision_mode=vision_mode)
     if suffix == ".docx":
         return _parse_docx_file(p, visual=visual)
     if suffix == ".doc":
-        return _parse_legacy_doc_file(p, visual=visual)
+        return _parse_legacy_doc_file(p, visual=visual, vision_mode=vision_mode)
     raise ValueError(f"暂不支持的文档格式: {suffix}（支持 .pdf / .docx / .doc）")
 
 
@@ -186,7 +201,8 @@ def _convert_office_to_pdf(path: Path) -> tuple[Path, Path] | None:
     return None
 
 
-def _parse_legacy_doc_file(path: Path, visual: bool = True) -> tuple[str, dict]:
+def _parse_legacy_doc_file(path: Path, visual: bool = True,
+                           vision_mode: str = "mcp") -> tuple[str, dict]:
     converted = _convert_office_to_pdf(path)
     if converted is None:
         raise RuntimeError(
@@ -195,7 +211,8 @@ def _parse_legacy_doc_file(path: Path, visual: bool = True) -> tuple[str, dict]:
         )
     pdf_path, temp_dir = converted
     try:
-        text, meta = parse_paper_file(str(pdf_path), visual=visual)
+        text, meta = parse_paper_file(str(pdf_path), visual=visual,
+                                       vision_mode=vision_mode)
         meta["stem"] = path.stem
         meta["document_type"] = "doc"
         return text, meta
@@ -270,7 +287,7 @@ def _augment_docx_with_visuals(path: Path, text: str,
 
 def _select_visual_pages(pdf_path: Path, max_pages: int) -> List[int]:
     """优先选择包含图表标题的页面，避免把整篇论文逐页发送给模型。"""
-    import fitz  # type: ignore
+    fitz = _pdf_backend()
 
     pages: List[int] = []
     all_pages = os.environ.get("SCIFIG_PARSE_VISION_ALL_PAGES", "0") == "1"
@@ -288,6 +305,147 @@ def _select_visual_pages(pdf_path: Path, max_pages: int) -> List[int]:
         if not pages and len(doc):
             pages.append(0)
     return pages
+
+
+def collect_visual_evidence(document_path: str, output_dir: str,
+                            max_pages: int = 12) -> Dict[str, Any]:
+    """提取给 Codex 多模态模型查看的本地视觉证据。
+
+    这个函数只做确定性的文件处理，不调用任何模型 API。PDF 会被渲染成
+    页面 PNG；DOCX 优先通过 LibreOffice 渲染页面，找不到 LibreOffice 时
+    回退为导出嵌入图片。返回的路径可以由调用方交给具备视觉能力的模型。
+    """
+    path = Path(document_path)
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return _collect_pdf_visual_evidence(path, root, max_pages)
+    if suffix == ".docx":
+        rendered = _convert_office_to_pdf(path)
+        if rendered is not None:
+            pdf_path, temp_dir = rendered
+            try:
+                result = _collect_pdf_visual_evidence(pdf_path, root, max_pages)
+                result["source"] = "rendered_pages"
+                return result
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        return _collect_docx_image_evidence(path, root)
+    if suffix == ".doc":
+        rendered = _convert_office_to_pdf(path)
+        if rendered is None:
+            return {
+                "enabled": True,
+                "mode": "codex",
+                "status": "dependency_missing",
+                "source": "legacy_doc",
+                "pages": [],
+                "artifacts": [],
+                "warnings": ["旧版 DOC 视觉证据需要 LibreOffice。"],
+            }
+        pdf_path, temp_dir = rendered
+        try:
+            result = _collect_pdf_visual_evidence(pdf_path, root, max_pages)
+            result["source"] = "rendered_pages"
+            return result
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    return {
+        "enabled": True,
+        "mode": "codex",
+        "status": "unsupported",
+        "source": suffix or "unknown",
+        "pages": [],
+        "artifacts": [],
+        "warnings": [f"暂不支持 {suffix or '无扩展名'} 的视觉证据提取。"],
+    }
+
+
+def _collect_pdf_visual_evidence(path: Path, root: Path,
+                                 max_pages: int) -> Dict[str, Any]:
+    try:
+        fitz = _pdf_backend()
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "mode": "codex",
+            "status": "dependency_missing",
+            "source": "page_renders",
+            "pages": [],
+            "artifacts": [],
+            "warnings": [f"页面证据需要 PyMuPDF: {exc}"],
+        }
+
+    pages = _select_visual_pages(path, max(1, int(max_pages)))
+    artifacts: List[Dict[str, Any]] = []
+    try:
+        with fitz.open(str(path)) as doc:
+            for page_index in pages:
+                page = doc[page_index]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                out = root / f"page-{page_index + 1:03d}.png"
+                pix.save(str(out))
+                artifacts.append({"page": page_index + 1, "path": str(out.resolve())})
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "mode": "codex",
+            "status": "error",
+            "source": "page_renders",
+            "pages": [index + 1 for index in pages],
+            "artifacts": artifacts,
+            "warnings": [str(exc)],
+        }
+
+    return {
+        "enabled": True,
+        "mode": "codex",
+        "status": "ready" if artifacts else "no_candidates",
+        "source": "page_renders",
+        "pages": [item["page"] for item in artifacts],
+        "artifacts": artifacts,
+        "warnings": [],
+    }
+
+
+def _collect_docx_image_evidence(path: Path, root: Path) -> Dict[str, Any]:
+    try:
+        from docx import Document
+        from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "mode": "codex",
+            "status": "dependency_missing",
+            "source": "embedded_images",
+            "pages": [],
+            "artifacts": [],
+            "warnings": [f"Word 图片证据需要 python-docx: {exc}"],
+        }
+
+    artifacts: List[Dict[str, Any]] = []
+    doc = Document(str(path))
+    for index, rel in enumerate(doc.part.rels.values(), start=1):
+        if rel.reltype != RT.IMAGE:
+            continue
+        target = rel.target_part
+        suffix = ".png"
+        content_type = getattr(target, "content_type", "image/png")
+        if "/" in content_type:
+            suffix = "." + content_type.split("/", 1)[1].replace("jpeg", "jpg")
+        out = root / f"embedded-{index:03d}{suffix}"
+        out.write_bytes(target.blob)
+        artifacts.append({"image": index, "path": str(out.resolve())})
+    return {
+        "enabled": True,
+        "mode": "codex",
+        "status": "ready" if artifacts else "no_embedded_images",
+        "source": "embedded_images",
+        "pages": [],
+        "artifacts": artifacts,
+        "warnings": [] if artifacts else ["未找到嵌入图片；安装 LibreOffice 可按页面提取。"],
+    }
 
 
 def _extract_json_object(text: str) -> Any:
@@ -334,7 +492,7 @@ def _augment_with_visuals(pdf_path: Path, text: str) -> Tuple[str, Dict[str, Any
         return text, meta
 
     try:
-        import fitz  # type: ignore
+        fitz = _pdf_backend()
         from scifig_mcp.tools.vision import analyze_image_bytes
     except Exception as exc:
         visual_meta["status"] = "dependency_missing"

@@ -28,7 +28,7 @@ from scifig_mcp.diagram_ir import validate_ir
 from scifig_mcp.llm.provider import get_llm
 from scifig_mcp.tools.audit import audit_ir
 from scifig_mcp.tools.decompose import decompose_paper
-from scifig_mcp.tools.parse import parse_document_file
+from scifig_mcp.tools.parse import parse_document_file, collect_visual_evidence
 from scifig_mcp.tools.render import render_to_svg, render_to_pptx, render_to_emf
 from scifig_mcp.plugins import load_registry
 from scifig_mcp.workflow import FigureWorkflow, workflow_json
@@ -47,38 +47,55 @@ def _out(name: str, ext: str) -> Path:
 
 
 @mcp.tool()
-def parse_document(document_path: str, tier: str = "basic", visual: bool = True) -> str:
+def parse_document(document_path: str, tier: str = "basic", visual: bool = True,
+                   vision_mode: str = "codex") -> str:
     """把 PDF/DOCX/DOC 文档解析成结构化 markdown，并用多模态模型识别图表/公式。
 
     Args:
         document_path: PDF、DOCX 或 DOC 文档的绝对路径
         tier: 解析质量 flash/basic/standard/advanced（默认 basic）
-        visual: 是否启用页面截图的多模态解析（默认 True）
+        visual: 是否生成或解析视觉证据（默认 True）
+        vision_mode: codex=只生成本地图片证据，mcp=调用外部视觉模型，off=关闭
     Returns:
         结构化 markdown 文本（写入 loot/, 返回路径+摘要）
     """
-    text, meta = parse_document_file(document_path, tier=tier, visual=visual)
+    if vision_mode not in {"codex", "mcp", "off"}:
+        raise ValueError("vision_mode 必须是 codex、mcp 或 off")
+    parser_visual = visual and vision_mode == "mcp"
+    text, meta = parse_document_file(
+        document_path, tier=tier, visual=parser_visual, vision_mode=vision_mode,
+    )
     out = OUT_DIR / "parsed" / f"{meta.get('stem','paper')}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
+    if visual and vision_mode == "codex":
+        meta["visual"] = collect_visual_evidence(
+            document_path, str(OUT_DIR / "evidence" / meta.get("stem", "paper")),
+        )
+    elif not visual or vision_mode == "off":
+        meta["visual"] = {"enabled": False, "mode": "off", "status": "disabled"}
     out.write_text(text, encoding="utf-8")
     return json.dumps({"path": str(out), "chars": len(text), "meta": meta}, ensure_ascii=False)
 
 
 @mcp.tool()
-def parse_paper(pdf_path: str, tier: str = "basic", visual: bool = True) -> str:
+def parse_paper(pdf_path: str, tier: str = "basic", visual: bool = True,
+                vision_mode: str = "codex") -> str:
     """兼容旧调用名；新代码请使用 parse_document。"""
-    return parse_document(pdf_path, tier=tier, visual=visual)
+    return parse_document(pdf_path, tier=tier, visual=visual, vision_mode=vision_mode)
 
 
 @mcp.tool()
 def prepare_figure(document_path: str, requirement: str = "",
                    tier: str = "basic", visual: bool = True,
-                   planner_mode: str = "codex") -> str:
+                   planner_mode: str = "codex",
+                   vision_mode: str = "codex") -> str:
     """高层工作流：解析文档并准备 Codex 可用的证据或科研图草稿。
 
     默认 ``planner_mode=codex``：MCP 只负责正文/图表/公式解析，返回
     ``parsed_text`` 和来源，Codex 自己生成 Diagram IR，不需要配置
     ``SCIFIG_LLM_*``。传入 ``planner_mode=mcp`` 才会调用 MCP 注册的规划器。
+    ``vision_mode=codex`` 只提取本地图片证据，由 Codex 负责视觉理解；
+    ``vision_mode=mcp`` 才会调用外部视觉模型。
     两种模式都不会直接渲染最终图。
     """
     result = WORKFLOW.prepare(
@@ -87,6 +104,7 @@ def prepare_figure(document_path: str, requirement: str = "",
         tier=tier,
         visual=visual,
         planner_mode=planner_mode,
+        vision_mode=vision_mode,
         artifact_dir=str(OUT_DIR / "prepared"),
     )
     return workflow_json(result)
@@ -97,6 +115,7 @@ def render_confirmed_figure(ir: dict, confirmed: bool = False,
                             out_name: str = "figure",
                             formats: list[str] | None = None,
                             scheme: str = "okabe-ito", qa: bool = True,
+                            qa_mode: str = "codex",
                             question: str = "", context: str = "") -> str:
     """高层工作流：确认 Diagram IR 后生成可编辑产物并返回质检建议。
 
@@ -111,6 +130,7 @@ def render_confirmed_figure(ir: dict, confirmed: bool = False,
         formats=formats,
         scheme=scheme,
         qa=qa,
+        qa_mode=qa_mode,
         question=question,
         context=context,
     )

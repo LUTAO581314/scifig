@@ -6,9 +6,9 @@
 
 | 工具 | 说明 |
 |------|------|
-| `prepare_figure` | 默认 Codex 模式：解析文档并返回正文/视觉证据；`planner_mode=mcp` 时生成 Diagram IR 草稿 |
-| `render_confirmed_figure` | 确认后的 IR → SVG/PPTX/PDF/PNG/EMF + 视觉质检建议 |
-| `parse_document` | PDF/DOCX/DOC → 结构化 markdown + 图表/公式多模态解析 |
+| `prepare_figure` | 默认 Codex 模式：解析文档并返回正文/本地视觉证据；`planner_mode=mcp` 时生成 Diagram IR 草稿 |
+| `render_confirmed_figure` | 确认后的 IR → SVG/PPTX/PDF/PNG/EMF；默认把视觉质检交给 Codex |
+| `parse_document` | PDF/DOCX/DOC → 结构化 markdown + 页面/嵌入图片证据 |
 | `parse_paper` | `parse_document` 的 PDF 兼容别名 |
 | `decompose` | 论文文本 + 需求 → Diagram IR JSON（LLM 拆解，含 locks） |
 | `validate_ir_tool` | 校验 Diagram IR 合法可渲染 |
@@ -129,6 +129,17 @@ render_to_svg(ir, "demo.svg")
 > 需先把 `mcp/` 加入 Python 路径（`cd mcp && pip install -e .`），或用绝对模块路径。
 
 配合 `skill/` 目录使用，按四阶段工作流执行（文本+视觉解析 → 拆解确认 → 审计 → 出图）。
+
+## Codex 主导的视觉架构
+
+默认 `vision_mode=codex`：MCP 不调用视觉模型 API，只提取 PDF 页面截图或 Word
+嵌入图片，并在结果的 `visual_evidence.artifacts` 返回本地文件路径；PDF 解析会跳过
+可能自动启动本地 VLM 的 MinerU，改用轻量文本提取。Codex/ChatGPT
+负责理解图表、公式和布局，生成 Diagram IR，再调用 `render_confirmed_figure`。
+
+只有独立运行 MCP 的自动视觉解析或自动视觉质检时，才使用
+`vision_mode=mcp`、`qa_mode=mcp` 并配置 `SCIFIG_VISION_BASE/KEY/MODEL`。
+这组变量是可选的，不是 Codex 正常工作所必需的。
 
 ## 外部插件适配
 

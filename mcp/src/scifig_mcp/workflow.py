@@ -29,6 +29,7 @@ class FigureWorkflow:
         visual: bool = True,
         artifact_dir: Optional[str] = None,
         planner_mode: str = "mcp",
+        vision_mode: str = "codex",
         evidence_limit: int = 30000,
     ) -> Dict[str, Any]:
         """准备证据或草稿，永远不会在此阶段生成最终图。
@@ -39,7 +40,44 @@ class FigureWorkflow:
         """
         if planner_mode not in {"codex", "mcp"}:
             raise ValueError("planner_mode 必须是 codex 或 mcp")
-        text, meta = self.registry.document_parser(document_path, tier, visual)
+        if vision_mode not in {"codex", "mcp", "off"}:
+            raise ValueError("vision_mode 必须是 codex、mcp 或 off")
+
+        # Codex 模式只让 MCP 做本地解析，避免子进程偷偷调用外部视觉模型。
+        parser_visual = visual and vision_mode == "mcp"
+        try:
+            text, meta = self.registry.document_parser(
+                document_path, tier, parser_visual, vision_mode=vision_mode,
+            )
+        except TypeError as exc:
+            # 兼容已有的三参数外部解析插件。
+            if "vision_mode" not in str(exc):
+                raise
+            text, meta = self.registry.document_parser(
+                document_path, tier, parser_visual,
+            )
+
+        if visual and vision_mode == "codex":
+            from scifig_mcp.tools.parse import collect_visual_evidence
+
+            evidence_dir = Path(artifact_dir or "./loot") / "visual"
+            try:
+                meta = dict(meta or {})
+                meta["visual"] = collect_visual_evidence(
+                    document_path, str(evidence_dir),
+                )
+            except Exception as exc:
+                meta = dict(meta or {})
+                meta["visual"] = {
+                    "enabled": True,
+                    "mode": "codex",
+                    "status": "error",
+                    "artifacts": [],
+                    "warnings": [str(exc)],
+                }
+        elif not visual or vision_mode == "off":
+            meta = dict(meta or {})
+            meta["visual"] = {"enabled": False, "mode": "off", "status": "disabled"}
 
         parsed_path = None
         if artifact_dir:
@@ -60,6 +98,8 @@ class FigureWorkflow:
                 },
                 "requirement": requirement,
                 "plugins": dict(self.registry.sources),
+                "vision_mode": vision_mode,
+                "visual_evidence": meta.get("visual", {}),
                 "parsed_text": text[:max(1, evidence_limit)],
                 "truncated": len(text) > max(1, evidence_limit),
             }
@@ -117,10 +157,13 @@ class FigureWorkflow:
         formats: Optional[Iterable[str]] = None,
         scheme: str = "okabe-ito",
         qa: bool = True,
+        qa_mode: str = "codex",
         question: str = "",
         context: str = "",
     ) -> Dict[str, Any]:
         """只在明确确认且审计通过后渲染，并返回可编辑产物和建议。"""
+        if qa_mode not in {"codex", "mcp", "off"}:
+            raise ValueError("qa_mode 必须是 codex、mcp 或 off")
         validation_errors = validate_ir(ir)
         audit = self.registry.auditor(ir) if not validation_errors else {
             "passed": False,
@@ -161,7 +204,13 @@ class FigureWorkflow:
             outputs[fmt] = str(path)
 
         qa_result: Dict[str, Any] = {"status": "skipped"}
-        if qa and self.registry.vision_qa:
+        if qa and qa_mode == "codex":
+            qa_result = {
+                "status": "delegated",
+                "mode": "codex",
+                "message": "渲染结果已生成；请由 Codex 多模态能力检查 PNG/PDF 后给出视觉修改意见。",
+            }
+        elif qa and qa_mode == "mcp" and self.registry.vision_qa:
             try:
                 qa_result = self.registry.vision_qa(
                     ir, question=question, context=context, scheme=scheme,
