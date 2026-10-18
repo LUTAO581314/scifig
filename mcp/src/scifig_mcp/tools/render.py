@@ -190,17 +190,36 @@ def _sgn(v: float) -> int:
     return 1 if v > 0 else (-1 if v < 0 else 0)
 
 
-def _ortho_pts(x1: float, y1: float, x2: float, y2: float, direction: str,
-               gw: float = NODE_W, gh: float = NODE_H) -> List[Tuple[float, float]]:
+def _ortho_pts(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    direction: str,
+    gw: float = NODE_W,
+    gh: float = NODE_H,
+    source_w: float | None = None,
+    target_w: float | None = None,
+    source_h: float | None = None,
+    target_h: float | None = None,
+) -> List[Tuple[float, float]]:
     """LR/RL 正交折线（Z 形，两处直角转弯），让连线对齐卡片进出边，避免斜穿。"""
     if direction in ("LR", "RL"):
         d = 1 if direction == "LR" else -1
-        sx = x1 + d * (gw / 2)
-        tx = x2 - d * (gw / 2)
+        sw = source_w if source_w is not None else gw
+        tw = target_w if target_w is not None else gw
+        sx = x1 + d * (sw / 2)
+        tx = x2 - d * (tw / 2)
         if abs(y2 - y1) <= 2:
             return [(sx, y1), (tx, y2)]
+        # 反向边采用跨空白区的斜向回流，避免 Z 形路径穿过评价节点，
+        # 也避免在画布最右侧形成容易被误读为边框的巨大 U 形回路。
+        if tx < sx:
+            sh = source_h if source_h is not None else gh
+            th = target_h if target_h is not None else gh
+            return [(x1, y1 + sh / 2), (x2, y2 - th / 2)]
         # 垂直段 x：前向边取两卡中点，反向边绕到源卡外侧
-        vx = (sx + tx) / 2 if tx > sx else sx + 60
+        vx = (sx + tx) / 2
         return [(sx, y1), (vx, y1), (vx, y2), (tx, y2)]
     return [(x1, y1), (x2, y2)]
 
@@ -248,6 +267,7 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
     groups = ir.get("groups", [])
     lanes = ir.get("lanes", [])
     sc = get_scheme(scheme_name)
+    group_styles = _group_style_map(ir, sc)
 
     # 先算最大尺寸以定画布
     node_center, _, _, _ = _layout(ir)
@@ -363,12 +383,9 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
         label = nd.get("label", nd.get("id", ""))
         desc = nd.get("desc", "")
         shape = nd.get("shape", "round")
-        fill = sc["primary"]["fill"]
-        stroke = sc["primary"]["stroke"]
-        # 分组内节点用弱化色
-        if nd.get("group"):
-            fill = sc["secondary"]["fill"]
-            stroke = sc["secondary"]["stroke"]
+        node_style = group_styles.get(nd.get("group"), sc["primary"])
+        fill = node_style["fill"]
+        stroke = node_style["stroke"]
         has_icon = False
         svg_txt = ""
         if iconlib is not None and nd.get("icon"):
@@ -526,6 +543,59 @@ def _pptx_node_size(nd: Dict[str, Any]) -> Tuple[float, float]:
     return w, h
 
 
+def _pptx_node_px_sizes(ir: Dict[str, Any]) -> Dict[str, Tuple[float, float]]:
+    """返回每个节点在 PPTX 中的实际尺寸（px）。"""
+    return {
+        nd.get("id"): tuple(value * 72.0 for value in _pptx_node_size(nd))
+        for nd in ir.get("nodes", [])
+        if nd.get("id")
+    }
+
+
+def _pptx_group_bounds(
+    ir: Dict[str, Any],
+    node_center: Dict[str, Tuple[float, float]],
+    node_sizes: Dict[str, Tuple[float, float]],
+) -> List[Tuple[Dict[str, Any], float, float, float, float]]:
+    """返回 PPTX 分组背景边界（px），顺序与 IR 中 groups 一致。"""
+    result = []
+    for group in ir.get("groups", []):
+        members = [
+            nd for nd in ir.get("nodes", [])
+            if nd.get("group") == group.get("id") and nd.get("id") in node_center
+        ]
+        if not members:
+            continue
+        left = min(
+            node_center[nd["id"]][0] - node_sizes[nd["id"]][0] / 2.0
+            for nd in members
+        ) - 26.0
+        right = max(
+            node_center[nd["id"]][0] + node_sizes[nd["id"]][0] / 2.0
+            for nd in members
+        ) + 26.0
+        top = min(
+            node_center[nd["id"]][1] - node_sizes[nd["id"]][1] / 2.0
+            for nd in members
+        ) - 38.0
+        bottom = max(
+            node_center[nd["id"]][1] + node_sizes[nd["id"]][1] / 2.0
+            for nd in members
+        ) + 26.0
+        result.append((group, left, top, right, bottom))
+    return result
+
+
+def _group_style_map(ir: Dict[str, Any], sc: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    """给分组分配稳定的语义色，确保 SVG/PNG/PPTX 一致。"""
+    roles = ("primary", "secondary", "accent", "primary")
+    return {
+        group.get("id"): sc[roles[index % len(roles)]]
+        for index, group in enumerate(ir.get("groups", []))
+        if group.get("id")
+    }
+
+
 def _pptx_bbox(
     ir: Dict[str, Any], node_center: Dict[str, Tuple[float, float]]
 ) -> Tuple[float, float, float, float]:
@@ -535,14 +605,19 @@ def _pptx_bbox(
     这里采用 PPTX 的真实尺寸，保证自适应画布不会裁切最长节点。
     """
     bounds: List[Tuple[float, float, float, float]] = []
+    node_sizes = _pptx_node_px_sizes(ir)
     for nd in ir.get("nodes", []):
         center = node_center.get(nd.get("id"))
         if not center:
             continue
         cx, cy = center
-        w, h = _pptx_node_size(nd)
-        half_w, half_h = w * 72.0 / 2.0, h * 72.0 / 2.0
+        w, h = node_sizes[nd["id"]]
+        half_w, half_h = w / 2.0, h / 2.0
         bounds.append((cx - half_w, cy - half_h, cx + half_w, cy + half_h))
+
+    # 分组框和标题属于可见内容，也需要计入自适应画布边界。
+    for _, left, top, right, bottom in _pptx_group_bounds(ir, node_center, node_sizes):
+        bounds.append((left, top - 24.0, right, bottom))
 
     # 反向边在正交路由中可能向源节点外侧绕行（最多 60 px），
     # 连接线和箭头也必须纳入边界，否则会被自适应画布裁掉。
@@ -552,7 +627,13 @@ def _pptx_bbox(
         end = node_center.get(edge.get("target"))
         if not start or not end:
             continue
-        points = _ortho_pts(start[0], start[1], end[0], end[1], direction)
+        source_size = node_sizes.get(edge.get("source"), (NODE_W, NODE_H))
+        target_size = node_sizes.get(edge.get("target"), (NODE_W, NODE_H))
+        points = _ortho_pts(
+            start[0], start[1], end[0], end[1], direction,
+            source_w=source_size[0], target_w=target_size[0],
+            source_h=source_size[1], target_h=target_size[1],
+        )
         xs = [point[0] for point in points]
         ys = [point[1] for point in points]
         # 文本标签固定为 1.9 x 0.4 英寸；预留箭头尖端和线宽。
@@ -572,6 +653,21 @@ def _pptx_bbox(
     )
 
 
+def _set_connector_tail_arrow(connector, arrow_type: str = "triangle") -> None:
+    """在 PPTX 连接线 XML 上设置真正的端点箭头。"""
+    from pptx.oxml.ns import qn
+
+    line = connector.line._get_or_add_ln()
+    for child in list(line):
+        if child.tag == qn("a:tailEnd"):
+            line.remove(child)
+    arrow = line.makeelement(
+        qn("a:tailEnd"),
+        {"type": arrow_type, "w": "med", "len": "med"},
+    )
+    line.append(arrow)
+
+
 def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
     """生成原生可编辑 PPTX（python-pptx）：每个节点一个形状、每条边一根连接线。"""
     out_path = _ensure_ext(out_path, ".pptx")
@@ -579,7 +675,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         from pptx import Presentation
         from pptx.util import Inches, Pt
         from pptx.enum.shapes import MSO_CONNECTOR
-        from pptx.enum.text import PP_ALIGN
+        from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
     except ImportError:
         raise RuntimeError("需要安装 python-pptx: pip install python-pptx")
 
@@ -589,6 +685,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
     node_center, _, _, _ = _layout(ir)
     sc = get_scheme(scheme)
+    group_styles = _group_style_map(ir, sc)
 
     # 论文架构图的手工坐标经常比 16:9 页面宽很多。以前固定成
     # 13.333 x 7.5 英寸会把右侧节点裁掉，或者迫使调用方把字体压得很小。
@@ -611,24 +708,47 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
     MM = 72.0
 
-    # 边（连接线 + 末端箭头）
     from pptx.enum.shapes import MSO_SHAPE
-    from math import atan2, degrees, sqrt
+    node_sizes = _pptx_node_px_sizes(ir)
 
-    def _arrow_head(px: float, py: float, angle_deg: float, color):
-        """在 (px,py) 放一个指向 angle 方向的小三角箭头。"""
-        hw, hh = 0.14, 0.15  # 箭头半宽/高（英寸）
-        tri = slide.shapes.add_shape(
-            MSO_SHAPE.ISOSCELES_TRIANGLE,
-            ox + Inches(px / MM) - Inches(hw / 2),
-            oy + Inches(py / MM) - Inches(hh / 2),
-            Inches(hw), Inches(hh),
+    # 分组背景必须先加入，才能位于连线和节点之下；这使 PPTX 与 SVG/PNG
+    # 都保留“数据/主流程/评价/结论”的视觉层级。
+    for group, left, top, right, bottom in _pptx_group_bounds(
+        ir, node_center, node_sizes
+    ):
+        panel = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            ox + Inches(left / MM),
+            oy + Inches(top / MM),
+            Inches((right - left) / MM),
+            Inches((bottom - top) / MM),
         )
-        tri.rotation = angle_deg
-        tri.fill.solid()
-        tri.fill.fore_color.rgb = _hex_to_rgb(color)
-        tri.line.fill.background()
-        return tri
+        panel.fill.solid()
+        panel.fill.fore_color.rgb = _hex_to_rgb(sc["neutral"]["fill"])
+        panel.line.color.rgb = _hex_to_rgb(sc["neutral"]["stroke"])
+        panel.line.width = Pt(1.0)
+        try:
+            from pptx.oxml.ns import qn
+            ln = panel.line._get_or_add_ln()
+            ln.append(ln.makeelement(qn("a:prstDash"), {"val": "dash"}))
+        except Exception:
+            pass
+
+        title = slide.shapes.add_textbox(
+            ox + Inches((left + right) / 2 / MM - 1.0),
+            oy + Inches((top - 28) / MM),
+            Inches(2.0), Inches(0.28),
+        )
+        title_tf = title.text_frame
+        title_tf.text = group.get("label", "")
+        title_tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        title_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        title_tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
+        title_tf.paragraphs[0].font.size = Pt(12)
+        title_tf.paragraphs[0].font.bold = True
+        title_tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["neutral"]["stroke"])
+
+    # 边（连接线 + 真正的端点箭头）
 
     for e in ir.get("edges", []):
         a = node_center.get(e.get("source"))
@@ -638,7 +758,13 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         x1, y1 = a
         x2, y2 = b
         direction = ir.get("direction", "LR")
-        pts = _ortho_pts(x1, y1, x2, y2, direction)
+        source_size = node_sizes.get(e.get("source"), (NODE_W, NODE_H))
+        target_size = node_sizes.get(e.get("target"), (NODE_W, NODE_H))
+        pts = _ortho_pts(
+            x1, y1, x2, y2, direction,
+            source_w=source_size[0], target_w=target_size[0],
+            source_h=source_size[1], target_h=target_size[1],
+        )
 
         # 每段一条直线连接线；末端段加箭头
         for k in range(len(pts) - 1):
@@ -660,14 +786,8 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
                     lnEl.append(d)
                 except Exception:
                     pass
-            # 终点收缩到卡片边缘，再画箭头
             if is_last:
-                dx, dy = bx - ax, by - ay
-                length = sqrt(dx * dx + dy * dy) or 1.0
-                ex = bx - dx / length * 10
-                ey = by - dy / length * 10
-                angle = degrees(atan2(dy, dx))
-                _arrow_head(ex, ey, angle, sc["arrow"]["stroke"])
+                _set_connector_tail_arrow(conn)
 
         if e.get("label"):
             mx, my = _label_center(pts)
@@ -686,7 +806,6 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         cx, cy = node_center[nd["id"]]
         label = nd.get("label", nd.get("id", ""))
         shape = nd.get("shape", "round")
-        is_group = bool(nd.get("group"))
         w, h = _pptx_node_size(nd)
         kind = {
             "box": MSO_SHAPE.RECTANGLE,
@@ -703,8 +822,9 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             oy + Inches((cy - h * 72 / 2) / MM),
             Inches(w), Inches(h),
         )
-        fill = sc["secondary"]["fill"] if is_group else sc["primary"]["fill"]
-        stroke = sc["secondary"]["stroke"] if is_group else sc["primary"]["stroke"]
+        node_style = group_styles.get(nd.get("group"), sc["primary"])
+        fill = node_style["fill"]
+        stroke = node_style["stroke"]
         sp.fill.solid()
         sp.fill.fore_color.rgb = _hex_to_rgb(fill)
         sp.line.color.rgb = _hex_to_rgb(stroke)

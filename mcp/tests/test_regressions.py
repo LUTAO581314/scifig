@@ -7,6 +7,8 @@
 """
 
 import os
+import zipfile
+import xml.etree.ElementTree as ET
 
 from scifig_mcp.tools.render import (
     _layout,
@@ -81,6 +83,19 @@ def test_render_emf_never_raises_and_delivers_preview(tmp_path):
     base = out[: -len(".emf")]
     # PIL 不会真正写 EMF 时必须有 SVG 预览兜底
     assert os.path.exists(base + "_preview.svg") or os.path.getsize(out) > 120
+
+
+def test_pptx_uses_editable_tail_arrows_and_group_panels(tmp_path):
+    out = render_to_pptx(PIPELINE, str(tmp_path / "editable"))
+    ns = {
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+    }
+    with zipfile.ZipFile(out) as archive:
+        slide = ET.fromstring(archive.read("ppt/slides/slide1.xml"))
+    assert len(slide.findall(".//a:tailEnd", ns)) == len(PIPELINE["edges"])
+    text = "".join(node.text or "" for node in slide.findall(".//a:t", ns))
+    assert "A" in text and "B" in text and "C" in text
 
 
 def test_focus_text_keeps_method_section():
