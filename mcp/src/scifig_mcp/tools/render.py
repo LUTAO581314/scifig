@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import html
+import os
 from typing import Any, Dict, List, Tuple
 
-from scifig_mcp.diagram_ir import SHAPES, validate_ir
+from scifig_mcp.diagram_ir import validate_ir
 from scifig_mcp.palette import get_scheme
 
 try:
@@ -28,6 +29,11 @@ except Exception:  # pragma: no cover
 NODE_W, NODE_H = 190, 64
 GAP_X, GAP_Y = 60, 40
 PAD = 100
+SVG_FONT_FAMILY = os.environ.get(
+    "SCIFIG_SVG_FONT_FAMILY",
+    "Microsoft YaHei, SimHei, Arial, Helvetica, sans-serif",
+)
+PPTX_FONT_FAMILY = os.environ.get("SCIFIG_PPTX_FONT_FAMILY", "Microsoft YaHei")
 
 
 def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tuple[Dict, Dict[str, int]]:
@@ -73,17 +79,17 @@ def _layer_positions(nodes: List[Dict], edges: List[Dict], direction: str) -> Tu
     # 按层收集节点，层内保持原顺序
     by_layer: Dict[int, List[int]] = {}
     for j, iid in enumerate(ids):
-        l = layer.get(iid, 0)
-        by_layer.setdefault(l, []).append(j)
+        layer_index = layer.get(iid, 0)
+        by_layer.setdefault(layer_index, []).append(j)
 
     pos: Dict[str, Tuple[int, int]] = {}
-    for l, js in by_layer.items():
+    for layer_index, js in by_layer.items():
         for k, j in enumerate(js):
             # 第一坐标 = 拓扑层（主轴），第二坐标 = 层内序号
             if direction in ("LR", "RL"):
-                pos[ids[j]] = (l, k)
+                pos[ids[j]] = (layer_index, k)
             else:
-                pos[ids[j]] = (k, l)
+                pos[ids[j]] = (k, layer_index)
 
     return pos, layer
 
@@ -93,7 +99,7 @@ def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
     nodes = ir.get("nodes", [])
     edges = ir.get("edges", [])
     groups = {g.get("id"): g for g in ir.get("groups", [])}
-    lanes = {l.get("id"): l for l in ir.get("lanes", [])}
+    lanes = {lane.get("id"): lane for lane in ir.get("lanes", [])}
     direction = ir.get("direction", "LR")
 
     is_lr = direction in ("LR", "RL")
@@ -157,7 +163,11 @@ def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
 
 def _text_w(s: str, font_size: float) -> float:
     """估算文本渲染宽度：CJK 全角≈1.0em，其他≈0.6em。"""
-    return sum(1.0 if ord(c) > 0x2E7F else 0.6 for c in s) * font_size
+    lines = str(s).splitlines() or [""]
+    return max(
+        sum(1.0 if ord(c) > 0x2E7F else 0.6 for c in line)
+        for line in lines
+    ) * font_size
 
 
 def _column_of(x: float) -> int:
@@ -239,14 +249,14 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
     parts: List[str] = []
     parts.append(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
-        f'viewBox="0 0 {W} {H}" font-family="Arial,Helvetica,sans-serif">'
+        f'viewBox="0 0 {W} {H}" font-family="{html.escape(SVG_FONT_FAMILY)}">'
     )
     parts.append(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
 
     # 泳道背景
     if lanes:
-        for l in lanes:
-            members = [nd for nd in nodes if nd.get("lane") == l.get("id")]
+        for lane in lanes:
+            members = [nd for nd in nodes if nd.get("lane") == lane.get("id")]
             if not members:
                 continue
             mxs = [node_center[m["id"]][0] for m in members]
@@ -263,7 +273,7 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
             parts.append(
                 f'<text x="{x1-16}" y="{y0+22}" text-anchor="end" font-size="16" '
                 f'font-weight="bold" fill="{sc["section_bg"]["stroke"]}">'
-                f'{html.escape(l.get("label",""))}</text>'
+                f'{html.escape(lane.get("label",""))}</text>'
             )
 
     # 分组背景
@@ -359,10 +369,12 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                 except Exception:
                     has_icon = False
         if is_lr:
-            w = int(col_w.get(_column_of(cx), 150))
+            w = int(col_w.get(_column_of(cx), NODE_W))
         else:
-            w = max(140, int(_text_w(label, 16) + 30))
-        parts += _node_svg(shape, cx, cy, w, NODE_H, fill, stroke, label, sc,
+            # 拓扑布局使用固定卡片尺寸；长文本通过换行保持连线和卡片不重叠。
+            w = NODE_W
+        node_h = NODE_H + max(0, len(str(label).splitlines()) - 2) * 12
+        parts += _node_svg(shape, cx, cy, w, node_h, fill, stroke, label, sc,
                            has_icon=has_icon, desc=desc)
         if has_icon and iconlib is not None:
             parts.append(_icon_inline_svg(svg_txt, cx, cy - NODE_H / 2 + 11, sc))
@@ -383,7 +395,7 @@ def _node_svg(shape: str, cx: float, cy: float, w: float, h: float,
               desc: str = "") -> str:
     x = cx - w / 2
     y = cy - h / 2
-    lbl = html.escape(label)
+    lines = [html.escape(line) for line in str(label).splitlines()] or [""]
     parts = []
     if shape == "box":
         parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" '
@@ -416,22 +428,21 @@ def _node_svg(shape: str, cx: float, cy: float, w: float, h: float,
         title_y = cy - 11 if has_icon else cy - 2
         parts.append(
             f'<text x="{cx}" y="{title_y}" text-anchor="middle" font-size="15" '
-            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
+            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lines[0]}</text>'
         )
         parts.append(
             f'<text x="{cx}" y="{title_y + 18}" text-anchor="middle" font-size="11.5" '
             f'fill="{sc["neutral"]["stroke"]}">{dsc}</text>'
         )
-    elif has_icon:
-        parts.append(
-            f'<text x="{cx}" y="{cy + 16}" text-anchor="middle" font-size="16" '
-            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
-        )
     else:
-        parts.append(
-            f'<text x="{cx}" y="{cy + 6}" text-anchor="middle" font-size="16" '
-            f'font-weight="bold" fill="{sc["text"]["fill"]}">{lbl}</text>'
-        )
+        line_height = 18
+        first_y = cy + 6 - (len(lines) - 1) * line_height / 2
+        for index, line in enumerate(lines):
+            parts.append(
+                f'<text x="{cx}" y="{first_y + index * line_height}" '
+                f'text-anchor="middle" font-size="16" font-weight="bold" '
+                f'fill="{sc["text"]["fill"]}">{line}</text>'
+            )
     return parts
 
 
@@ -588,6 +599,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             tf = tb.text_frame
             tf.text = e["label"]
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
             tf.paragraphs[0].font.size = Pt(11)
             tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 
@@ -597,9 +609,10 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         label = nd.get("label", nd.get("id", ""))
         shape = nd.get("shape", "round")
         is_group = bool(nd.get("group"))
-        h = 1.0 if nd.get("desc") else 0.9
-        w = max(2.0 if nd.get("desc") else 1.9, len(label) * 0.14 + 0.5)
-        from pptx.enum.shapes import MSO_SHAPE
+        label_lines = str(label).splitlines() or [""]
+        h = 1.0 if nd.get("desc") else 0.9 + max(0, len(label_lines) - 2) * 0.18
+        w = max(2.0 if nd.get("desc") else 1.9,
+                min(3.2, max(len(line) for line in label_lines) * 0.14 + 0.5))
         kind = {
             "box": MSO_SHAPE.RECTANGLE,
             "round": MSO_SHAPE.ROUNDED_RECTANGLE,
@@ -634,12 +647,14 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             tf.text = label
             p0 = tf.paragraphs[0]
             p0.alignment = PP_ALIGN.CENTER
+            p0.font.name = PPTX_FONT_FAMILY
             p0.font.size = Pt(13)
             p0.font.bold = True
             p0.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
             p1 = tf.add_paragraph()
             p1.text = nd["desc"]
             p1.alignment = PP_ALIGN.CENTER
+            p1.font.name = PPTX_FONT_FAMILY
             p1.font.size = Pt(9)
             p1.font.bold = False
             p1.font.color.rgb = _hex_to_rgb(sc["neutral"]["stroke"])
@@ -647,6 +662,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             tf.text = label
             for p in tf.paragraphs:
                 p.alignment = PP_ALIGN.CENTER
+                p.font.name = PPTX_FONT_FAMILY
                 p.font.size = Pt(14)
                 p.font.bold = True
                 p.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
@@ -662,6 +678,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         tb = slide.shapes.add_textbox(Inches(0.6), Inches(0.1), Inches(12), Inches(0.5))
         tf = tb.text_frame
         tf.text = ir["title"]
+        tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
         tf.paragraphs[0].font.size = Pt(24)
         tf.paragraphs[0].font.bold = True
 
