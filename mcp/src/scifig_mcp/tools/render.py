@@ -515,6 +515,63 @@ def render_to_pdf(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") 
     return out_path
 
 
+def _pptx_node_size(nd: Dict[str, Any]) -> Tuple[float, float]:
+    """返回 PPTX 节点尺寸（英寸），与 ``render_to_pptx`` 的绘制规则一致。"""
+    label_lines = str(nd.get("label", nd.get("id", ""))).splitlines() or [""]
+    h = 1.0 if nd.get("desc") else 0.9 + max(0, len(label_lines) - 2) * 0.18
+    w = max(
+        2.0 if nd.get("desc") else 1.9,
+        min(3.2, max(len(line) for line in label_lines) * 0.14 + 0.5),
+    )
+    return w, h
+
+
+def _pptx_bbox(
+    ir: Dict[str, Any], node_center: Dict[str, Tuple[float, float]]
+) -> Tuple[float, float, float, float]:
+    """计算 PPTX 内容边界（坐标单位为渲染器使用的 px）。
+
+    SVG 使用固定节点框，而 PPTX 会根据中文行数和描述长度调整节点宽高；
+    这里采用 PPTX 的真实尺寸，保证自适应画布不会裁切最长节点。
+    """
+    bounds: List[Tuple[float, float, float, float]] = []
+    for nd in ir.get("nodes", []):
+        center = node_center.get(nd.get("id"))
+        if not center:
+            continue
+        cx, cy = center
+        w, h = _pptx_node_size(nd)
+        half_w, half_h = w * 72.0 / 2.0, h * 72.0 / 2.0
+        bounds.append((cx - half_w, cy - half_h, cx + half_w, cy + half_h))
+
+    # 反向边在正交路由中可能向源节点外侧绕行（最多 60 px），
+    # 连接线和箭头也必须纳入边界，否则会被自适应画布裁掉。
+    direction = ir.get("direction", "LR")
+    for edge in ir.get("edges", []):
+        start = node_center.get(edge.get("source"))
+        end = node_center.get(edge.get("target"))
+        if not start or not end:
+            continue
+        points = _ortho_pts(start[0], start[1], end[0], end[1], direction)
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        # 文本标签固定为 1.9 x 0.4 英寸；预留箭头尖端和线宽。
+        if edge.get("label"):
+            mx, my = _label_center(points)
+            xs.extend([mx - 68.4, mx + 68.4])
+            ys.extend([my - 14.4, my + 14.4])
+        bounds.append((min(xs) - 8.0, min(ys) - 8.0, max(xs) + 8.0, max(ys) + 8.0))
+
+    if not bounds:
+        return 0.0, 0.0, 720.0, 540.0
+    return (
+        min(item[0] for item in bounds),
+        min(item[1] for item in bounds),
+        max(item[2] for item in bounds),
+        max(item[3] for item in bounds),
+    )
+
+
 def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito") -> str:
     """生成原生可编辑 PPTX（python-pptx）：每个节点一个形状、每条边一根连接线。"""
     out_path = _ensure_ext(out_path, ".pptx")
@@ -530,17 +587,27 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
     if errors:
         raise ValueError("IR 非法: " + "; ".join(errors))
 
-    prs = Presentation()
-    prs.slide_width = Inches(13.333)
-    prs.slide_height = Inches(7.5)
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # 空白
-
     node_center, _, _, _ = _layout(ir)
     sc = get_scheme(scheme)
 
-    cx0, cy0, _, _ = _bbox(ir)
-    ox = Inches(0.6) - Inches(cx0 / 72)
-    oy = Inches(0.6) - Inches(cy0 / 72)
+    # 论文架构图的手工坐标经常比 16:9 页面宽很多。以前固定成
+    # 13.333 x 7.5 英寸会把右侧节点裁掉，或者迫使调用方把字体压得很小。
+    # PPTX 支持自定义页面尺寸，因此按节点实际边界生成内容适配画布，保留
+    # 原生可编辑形状和文字。高度也跟随内容，避免在宽幅论文图下产生大块空白。
+    cx0, cy0, cx1, cy1 = _pptx_bbox(ir, node_center)
+    margin_x = 0.6
+    margin_top = 0.75
+    margin_bottom = 0.6
+    slide_width = max(10.0, (cx1 - cx0) / 72.0 + margin_x * 2)
+    slide_height = max(5.5, (cy1 - cy0) / 72.0 + margin_top + margin_bottom)
+
+    prs = Presentation()
+    prs.slide_width = Inches(slide_width)
+    prs.slide_height = Inches(slide_height)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # 空白
+
+    ox = Inches(margin_x) - Inches(cx0 / 72)
+    oy = Inches(margin_top) - Inches(cy0 / 72)
 
     MM = 72.0
 
@@ -620,10 +687,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         label = nd.get("label", nd.get("id", ""))
         shape = nd.get("shape", "round")
         is_group = bool(nd.get("group"))
-        label_lines = str(label).splitlines() or [""]
-        h = 1.0 if nd.get("desc") else 0.9 + max(0, len(label_lines) - 2) * 0.18
-        w = max(2.0 if nd.get("desc") else 1.9,
-                min(3.2, max(len(line) for line in label_lines) * 0.14 + 0.5))
+        w, h = _pptx_node_size(nd)
         kind = {
             "box": MSO_SHAPE.RECTANGLE,
             "round": MSO_SHAPE.ROUNDED_RECTANGLE,
@@ -686,7 +750,9 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
     # 标题
     if ir.get("title"):
-        tb = slide.shapes.add_textbox(Inches(0.6), Inches(0.1), Inches(12), Inches(0.5))
+        tb = slide.shapes.add_textbox(
+            Inches(margin_x), Inches(0.12),
+            Inches(max(1.0, slide_width - margin_x * 2)), Inches(0.45))
         tf = tb.text_frame
         tf.text = ir["title"]
         tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
