@@ -21,7 +21,8 @@ description: 将学术论文(上传PDF/DOCX/DOC+需求)拆解为可编辑科研�
 - 作图需求描述（"画机制图/流程图/架构图/示意图…"，或"把第X方法画成图"）
 
 ### 阶段1-2 解析与规划（优先调用 MCP 工具 `prepare_figure`）
-- 高层工具会串联 `parse_document` + `decompose`，一次返回论文类型、证据来源、候选 Diagram IR 和审计结果
+- 默认 `planner_mode=codex`：MCP 返回正文、图表/公式视觉证据和来源，Codex 自己生成 Diagram IR，不需要额外文本模型 Key
+- 需要 MCP 自动规划时显式传 `planner_mode=mcp`，此时才调用注册表里的 LLM 规划插件
 - 需要单独调试时再分别调用 `parse_document`、`decompose`
 - PDF / DOCX / DOC → 结构化文本（标题/摘要/方法/图表/参考文献/公式）
 - DOCX 优先读取段落、标题、表格和嵌入图片；安装 LibreOffice 后再补充页面级视觉解析

@@ -28,9 +28,42 @@ class FigureWorkflow:
         tier: str = "basic",
         visual: bool = True,
         artifact_dir: Optional[str] = None,
+        planner_mode: str = "mcp",
+        evidence_limit: int = 30000,
     ) -> Dict[str, Any]:
-        """准备可供对话确认的草稿，永远不会在此阶段生成最终图。"""
+        """准备证据或草稿，永远不会在此阶段生成最终图。
+
+        ``planner_mode=codex`` 只做文档解析和视觉证据提取，把 Diagram IR
+        的规划交给调用方（通常是 Codex）；``planner_mode=mcp`` 保留旧行为，
+        由注册表里的规划插件调用外部文本模型。
+        """
+        if planner_mode not in {"codex", "mcp"}:
+            raise ValueError("planner_mode 必须是 codex 或 mcp")
         text, meta = self.registry.document_parser(document_path, tier, visual)
+
+        parsed_path = None
+        if artifact_dir:
+            root = Path(artifact_dir)
+            root.mkdir(parents=True, exist_ok=True)
+            parsed_path = root / f"{meta.get('stem', 'paper')}.md"
+            parsed_path.write_text(text, encoding="utf-8")
+
+        if planner_mode == "codex":
+            return {
+                "status": "evidence",
+                "mode": "codex",
+                "next": "Codex 根据 parsed_text 和 visual 元数据生成 Diagram IR，然后调用 render_confirmed_figure。",
+                "source": {
+                    "document_path": str(Path(document_path).resolve()),
+                    "parsed_document_path": str(parsed_path) if parsed_path else None,
+                    "meta": meta,
+                },
+                "requirement": requirement,
+                "plugins": dict(self.registry.sources),
+                "parsed_text": text[:max(1, evidence_limit)],
+                "truncated": len(text) > max(1, evidence_limit),
+            }
+
         plan = self.registry.planner(text, requirement)
         if not isinstance(plan, dict):
             raise ValueError("规划插件必须返回 JSON 对象")
@@ -57,15 +90,9 @@ class FigureWorkflow:
                 "renderable": bool(validation["valid"] and audit.get("passed")),
             })
 
-        parsed_path = None
-        if artifact_dir:
-            root = Path(artifact_dir)
-            root.mkdir(parents=True, exist_ok=True)
-            parsed_path = root / f"{meta.get('stem', 'paper')}.md"
-            parsed_path.write_text(text, encoding="utf-8")
-
         return {
             "status": "draft",
+            "mode": "mcp",
             "next": "选择一个 figure_irs 项并确认后调用 render_confirmed_figure；草稿阶段不会交付最终图。",
             "source": {
                 "document_path": str(Path(document_path).resolve()),

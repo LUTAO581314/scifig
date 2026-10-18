@@ -61,6 +61,19 @@ def test_prepare_returns_draft_and_persists_source(tmp_path):
     assert Path(result["source"]["parsed_document_path"]).exists()
 
 
+def test_codex_mode_returns_evidence_without_calling_planner(tmp_path):
+    registry, calls = _registry(tmp_path)
+    result = FigureWorkflow(registry).prepare(
+        "paper.pdf", planner_mode="codex", artifact_dir=str(tmp_path)
+    )
+
+    assert result["status"] == "evidence"
+    assert result["mode"] == "codex"
+    assert result["parsed_text"].startswith("# Demo")
+    assert "figures" not in result
+    assert calls == []
+
+
 def test_render_requires_confirmation(tmp_path):
     registry, calls = _registry(tmp_path)
     result = FigureWorkflow(registry).render_confirmed(

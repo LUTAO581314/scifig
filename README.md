@@ -137,7 +137,7 @@ TUI 中执行 `/mcp` 查看工具，或直接调用 `prepare_figure`。
 
 | 工具 | 说明 |
 |------|------|
-| `prepare_figure` | 高层入口：文档解析 → 规划 → 校验 → 待确认草稿 |
+| `prepare_figure` | 默认 Codex 模式：文档解析 → 正文/视觉证据；可选 `planner_mode=mcp` 自动生成草稿 |
 | `render_confirmed_figure` | 确认后的 IR → 可编辑图 + QA 建议 |
 | `parse_document` | PDF/DOCX/DOC → 结构化 markdown + 图表/公式多模态解析 |
 | `parse_paper` | `parse_document` 的 PDF 兼容别名 |

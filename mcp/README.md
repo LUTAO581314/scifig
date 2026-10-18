@@ -6,7 +6,7 @@
 
 | 工具 | 说明 |
 |------|------|
-| `prepare_figure` | 高层入口：解析文档、生成 Diagram IR 草稿、校验并返回证据来源 |
+| `prepare_figure` | 默认 Codex 模式：解析文档并返回正文/视觉证据；`planner_mode=mcp` 时生成 Diagram IR 草稿 |
 | `render_confirmed_figure` | 确认后的 IR → SVG/PPTX/PDF/PNG/EMF + 视觉质检建议 |
 | `parse_document` | PDF/DOCX/DOC → 结构化 markdown + 图表/公式多模态解析 |
 | `parse_paper` | `parse_document` 的 PDF 兼容别名 |

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-from scifig_mcp.diagram_ir import validate_ir, ir_to_json
+from scifig_mcp.diagram_ir import validate_ir
 from scifig_mcp.llm.provider import get_llm
 from scifig_mcp.tools.audit import audit_ir
 from scifig_mcp.tools.decompose import decompose_paper
@@ -72,18 +72,21 @@ def parse_paper(pdf_path: str, tier: str = "basic", visual: bool = True) -> str:
 
 @mcp.tool()
 def prepare_figure(document_path: str, requirement: str = "",
-                   tier: str = "basic", visual: bool = True) -> str:
-    """高层工作流：解析 PDF/DOCX/DOC 并生成待确认的科研图草稿。
+                   tier: str = "basic", visual: bool = True,
+                   planner_mode: str = "codex") -> str:
+    """高层工作流：解析文档并准备 Codex 可用的证据或科研图草稿。
 
-    该工具只返回结构化草稿、证据来源和审计结果，不渲染最终图。ChatGPT
-    应先向用户展示 ``figures[*].ir``，用户确认后再调用
-    ``render_confirmed_figure``。
+    默认 ``planner_mode=codex``：MCP 只负责正文/图表/公式解析，返回
+    ``parsed_text`` 和来源，Codex 自己生成 Diagram IR，不需要配置
+    ``SCIFIG_LLM_*``。传入 ``planner_mode=mcp`` 才会调用 MCP 注册的规划器。
+    两种模式都不会直接渲染最终图。
     """
     result = WORKFLOW.prepare(
         document_path=document_path,
         requirement=requirement,
         tier=tier,
         visual=visual,
+        planner_mode=planner_mode,
         artifact_dir=str(OUT_DIR / "prepared"),
     )
     return workflow_json(result)
