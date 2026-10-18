@@ -119,6 +119,20 @@ set SCIFIG_VISION_MODEL=gpt-4o
 
 skill 位于 `skill/`，MCP server 在 `mcp/`。详见 `mcp/README.md`。
 
+### 4. 在 Codex 使用
+
+仓库已包含项目级 `.codex/config.toml`。在仓库根目录安装依赖后，信任该项目，
+Codex 会读取 `scifig` MCP 配置；密钥通过本机环境变量传入，不会写入仓库。
+
+```bash
+cd mcp
+pip install -e .[all]
+codex mcp list
+```
+
+看到 `scifig` 为 `enabled` 即表示 Codex 已发现该 MCP。首次使用时可在 Codex
+TUI 中执行 `/mcp` 查看工具，或直接调用 `prepare_figure`。
+
 ## MCP 工具
 
 | 工具 | 说明 |

@@ -1,0 +1,29 @@
+# SciFig MCP 的项目级 Codex 配置。
+# 先在仓库的 mcp/ 目录执行：pip install -e .[all]
+# 密钥从本机环境变量转发，不写入仓库。
+
+[mcp_servers.scifig]
+command = "python"
+args = ["-m", "scifig_mcp.server"]
+cwd = "mcp"
+startup_timeout_sec = 30
+tool_timeout_sec = 600
+enabled = true
+env_vars = [
+  "SCIFIG_LLM_PROVIDER",
+  "SCIFIG_LLM_BASE",
+  "SCIFIG_LLM_KEY",
+  "SCIFIG_LLM_MODEL",
+  "SCIFIG_LLM_STREAM",
+  "SCIFIG_VISION_PROVIDER",
+  "SCIFIG_VISION_BASE",
+  "SCIFIG_VISION_KEY",
+  "SCIFIG_VISION_MODEL",
+  "SCIFIG_VISION_TIMEOUT",
+  "SCIFIG_PARSE_VISION_MAX_PAGES",
+  "SCIFIG_PARSE_VISION_ALL_PAGES",
+  "SCIFIG_PLUGIN_MODULES"
+]
+
+[mcp_servers.scifig.env]
+SCIFIG_OUT_DIR = "./loot"
