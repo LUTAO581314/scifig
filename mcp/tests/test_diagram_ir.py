@@ -63,9 +63,15 @@ def test_format_locked_specific():
     ir = {**VALID_IR, "locks": {"nodes": ["n2"], "edges": [], "groups": ["g1"]}}
     s = format_ir_for_regeneration(ir)
     # n2 与 g1 应被标记 LOCKED，n1 不应
-    lines_n2 = [l for l in s.splitlines() if "n2:" in l]
+    lines_n2 = [line for line in s.splitlines() if "n2:" in line]
     assert lines_n2 and "[LOCKED]" in lines_n2[0]
-    lines_n1 = [l for l in s.splitlines() if "n1:" in l]
+    lines_n1 = [line for line in s.splitlines() if "n1:" in line]
     assert lines_n1 and "[LOCKED]" not in lines_n1[0]
-    lines_g1 = [l for l in s.splitlines() if "g1:" in l]
+    lines_g1 = [line for line in s.splitlines() if "g1:" in line]
     assert lines_g1 and "[LOCKED]" in lines_g1[0]
+
+
+def test_manual_position_requires_numeric_xy():
+    ir = {"nodes": [{"id": "n1", "position": {"x": "left", "y": 20}}]}
+
+    assert any("position x/y" in error for error in validate_ir(ir))

@@ -106,6 +106,17 @@ def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
 
     pos_grid, layers = _layer_positions(nodes, edges, direction)
 
+    # 参考图需要中心主流程、侧边评价和反馈模块时，允许 IR 提供精确坐标。
+    # 坐标单位与 SVG 使用的 px 一致；未提供完整坐标时继续使用自动布局。
+    manual_positions = {
+        nd.get("id"): (float(nd["position"]["x"]), float(nd["position"]["y"]))
+        for nd in nodes
+        if isinstance(nd.get("position"), dict)
+        and "x" in nd["position"] and "y" in nd["position"]
+    }
+    if nodes and len(manual_positions) == len(nodes):
+        return manual_positions, layers, groups, lanes
+
     # 泳道顺序（保持出现顺序）
     lane_order: List[str] = []
     for nd in nodes:

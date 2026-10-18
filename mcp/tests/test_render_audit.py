@@ -4,7 +4,6 @@ import pytest
 
 from scifig_mcp.tools.render import build_svg, render_to_svg
 from scifig_mcp.tools.audit import audit_ir
-from scifig_mcp.diagram_ir import validate_ir
 
 SAMPLE = {
     "title": "图1 框架",
@@ -37,6 +36,22 @@ def test_render_to_svg_writes_file(tmp_path):
     render_to_svg(SAMPLE, str(p))
     assert p.exists()
     assert p.read_text(encoding="utf-8").startswith("<svg")
+
+
+def test_manual_positions_are_used_for_reference_style_layout():
+    ir = {
+        "direction": "LR",
+        "nodes": [
+            {"id": "a", "label": "A", "position": {"x": 180, "y": 200}},
+            {"id": "b", "label": "B", "position": {"x": 520, "y": 420}},
+        ],
+        "edges": [{"id": "e", "source": "a", "target": "b"}],
+    }
+
+    svg = build_svg(ir, "paper-soft")
+
+    assert 'x="180.0"' in svg
+    assert 'y="206.0"' in svg
 
 
 def test_audit_passes_for_good():

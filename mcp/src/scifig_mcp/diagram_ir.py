@@ -20,7 +20,7 @@ Schema:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List
 
 # 有效取值的强约束（渲染与校验共用）
 SHAPES = {"round", "box", "diamond", "cylinder", "ellipse", "parallelogram", "cloud"}
@@ -38,7 +38,6 @@ def validate_ir(ir: Dict[str, Any]) -> List[str]:
     nodes = ir.get("nodes", [])
     edges = ir.get("edges", [])
     groups = ir.get("groups", [])
-    lanes = ir.get("lanes", [])
 
     direction = ir.get("direction", "LR")
     if direction not in DIRECTIONS:
@@ -56,9 +55,18 @@ def validate_ir(ir: Dict[str, Any]) -> List[str]:
         shape = nd.get("shape", "round")
         if shape not in SHAPES:
             errors.append(f"节点 {nid} 非法 shape: {shape}")
+        position = nd.get("position")
+        if position is not None:
+            if not isinstance(position, dict) or "x" not in position or "y" not in position:
+                errors.append(f"节点 {nid} 的 position 必须包含 x/y")
+            else:
+                try:
+                    float(position["x"])
+                    float(position["y"])
+                except (TypeError, ValueError):
+                    errors.append(f"节点 {nid} 的 position x/y 必须是数字")
 
     group_ids = {g.get("id") for g in groups}
-    lane_ids = {l.get("id") for l in lanes}
 
     # 边引用必须存在
     edge_ids = []
@@ -119,17 +127,19 @@ def format_ir_for_regeneration(ir: Dict[str, Any]) -> str:
 
     if ir.get("lanes"):
         lines.append("Lanes:")
-        for l in ir["lanes"]:
-            lines.append(f"  - {l.get('id')}: {l.get('label')}")
+        for lane in ir["lanes"]:
+            lines.append(f"  - {lane.get('id')}: {lane.get('label')}")
 
     lines.append("Nodes:")
     for nd in ir.get("nodes", []):
         tag = " [LOCKED]" if nd.get("id") in locked_nodes else ""
         lane = f" lane={nd.get('lane')}" if nd.get("lane") else ""
         g = f" group={nd.get('group')}" if nd.get("group") else ""
+        pos = nd.get("position")
+        position = f" position=({pos.get('x')},{pos.get('y')})" if pos else ""
         lines.append(
             f"  - {nd.get('id')}: {nd.get('label')} "
-            f"[shape={nd.get('shape', 'round')}]{g}{lane}{tag}"
+            f"[shape={nd.get('shape', 'round')}]{g}{lane}{position}{tag}"
         )
 
     lines.append("Edges:")
