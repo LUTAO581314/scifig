@@ -2,7 +2,7 @@
 
 import pytest
 
-from scifig_mcp.tools.render import build_svg, render_to_svg
+from scifig_mcp.tools.render import _layout, build_svg, render_to_svg
 from scifig_mcp.tools.audit import audit_ir
 
 SAMPLE = {
@@ -52,6 +52,26 @@ def test_manual_positions_are_used_for_reference_style_layout():
 
     assert 'x="180.0"' in svg
     assert 'y="206.0"' in svg
+
+
+def test_manual_layout_can_compress_two_row_columns():
+    ir = {
+        "direction": "LR",
+        "layout": {"column_scale": 0.8},
+        "nodes": [
+            {"id": "a", "label": "A", "position": {"x": 100, "y": 200}},
+            {"id": "b", "label": "B", "position": {"x": 500, "y": 200}},
+            {"id": "c", "label": "C", "position": {"x": 900, "y": 500}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "a", "target": "b"},
+            {"id": "e2", "source": "b", "target": "c"},
+        ],
+    }
+    node_center, _, _, _ = _layout(ir)
+    assert node_center["a"][0] == 100
+    assert node_center["b"][0] == 420
+    assert node_center["c"][0] == 740
 
 
 def test_audit_passes_for_good():

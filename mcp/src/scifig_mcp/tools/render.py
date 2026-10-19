@@ -123,6 +123,17 @@ def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
             row_scale = float(layout_cfg.get("row_scale", 1.0))
         except (TypeError, ValueError):
             row_scale = 1.0
+        try:
+            column_scale = float(layout_cfg.get("column_scale", 1.0))
+        except (TypeError, ValueError):
+            column_scale = 1.0
+        column_scale = column_scale if 0.5 <= column_scale <= 2.0 else 1.0
+        if column_scale != 1.0 and manual_positions:
+            min_x = min(x for x, _ in manual_positions.values())
+            manual_positions = {
+                nid: (min_x + (x - min_x) * column_scale, y)
+                for nid, (x, y) in manual_positions.items()
+            }
         if row_scale != 1.0 and manual_positions:
             min_y = min(y for _, y in manual_positions.values())
             manual_positions = {
@@ -424,10 +435,22 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
     # 同列统一卡宽（LR：列=拓扑层；TB 不做等宽，保持原样）
     is_lr = direction in ("LR", "RL")
     col_w: Dict[int, float] = {}
+    manual_column_map: Dict[str, int] = {}
+    if is_lr and nodes:
+        # 手工坐标压缩后不再能用固定 250px 网格反推列号，按实际 x 坐标聚类。
+        column_centers: List[float] = []
+        for nd in sorted(nodes, key=lambda item: node_center[item["id"]][0]):
+            x = node_center[nd["id"]][0]
+            if not column_centers or abs(x - column_centers[-1]) > NODE_W * 0.72:
+                column_centers.append(x)
+            manual_column_map[nd["id"]] = min(
+                range(len(column_centers)),
+                key=lambda index: abs(column_centers[index] - x),
+            )
     for nd in nodes:
         if not is_lr:
             break
-        col = _column_of(node_center[nd["id"]][0])
+        col = manual_column_map.get(nd["id"], _column_of(node_center[nd["id"]][0]))
         lbl = nd.get("label", nd.get("id", ""))
         w_est = max(150.0, _text_w(lbl, 16) + 30)
         if nd.get("desc"):
@@ -453,7 +476,8 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                 except Exception:
                     has_icon = False
         if is_lr:
-            w = int(col_w.get(_column_of(cx), NODE_W))
+            col = manual_column_map.get(nd["id"], _column_of(cx))
+            w = int(col_w.get(col, NODE_W))
         else:
             # 拓扑布局使用固定卡片尺寸；长文本通过换行保持连线和卡片不重叠。
             w = NODE_W
@@ -987,7 +1011,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             for p in tf.paragraphs:
                 p.alignment = PP_ALIGN.CENTER
                 p.font.name = PPTX_FONT_FAMILY
-                p.font.size = Pt(14)
+                p.font.size = Pt(16)
                 p.font.bold = True
                 p.font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 

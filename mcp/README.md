@@ -95,7 +95,7 @@ ir = {
         {"id": "e1", "source": "n1", "target": "n2", "label": "特征", "style": "solid"},
         {"id": "e2", "source": "n2", "target": "n3", "label": "结果", "style": "solid"},
     ],
-    "layout": {"canvas_ratio": "4:3"},
+    "layout": {"row_scale": 1.0, "column_scale": 1.0, "canvas_ratio": "4:3"},
     "locks": {"nodes": [], "edges": [], "groups": []},
 }
 
