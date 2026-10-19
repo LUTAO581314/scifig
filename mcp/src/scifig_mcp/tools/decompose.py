@@ -108,6 +108,7 @@ def _user_prompt(paper_text: str, requirement: str) -> str:
           "icon": "关键词(细胞/membrane/DNA/protein/virus 等，生物机制图填充)"}}
       ],
       "edges": [{{"id": "e1", "source": "n1", "target": "n2", "label": "...", "style": "solid|dashed|feedback"}}],
+      "layout": {{"canvas_ratio": "4:3"}},
       "locks": {{"nodes": [], "edges": [], "groups": []}},
       "caption": "图注建议"
     }}

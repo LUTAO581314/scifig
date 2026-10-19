@@ -10,6 +10,8 @@ import os
 import zipfile
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from scifig_mcp.tools.render import (
     _layout,
     render_to_emf,
@@ -96,6 +98,27 @@ def test_pptx_uses_editable_tail_arrows_and_group_panels(tmp_path):
     assert len(slide.findall(".//a:tailEnd", ns)) == len(PIPELINE["edges"])
     text = "".join(node.text or "" for node in slide.findall(".//a:t", ns))
     assert "A" in text and "B" in text and "C" in text
+
+
+def test_pptx_canvas_defaults_to_four_three(tmp_path):
+    from pptx import Presentation
+
+    out = render_to_pptx(PIPELINE, str(tmp_path / "ratio"))
+    prs = Presentation(out)
+    ratio = prs.slide_width / prs.slide_height
+    assert ratio == pytest.approx(4 / 3, rel=1e-3)
+
+
+def test_svg_canvas_defaults_to_four_three():
+    from scifig_mcp.tools.render import build_svg
+
+    svg = build_svg(PIPELINE, "paper-soft")
+    import re
+
+    match = re.search(r'<svg[^>]+width="(\d+)" height="(\d+)"', svg)
+    assert match is not None
+    width, height = (int(value) for value in match.groups())
+    assert width / height == pytest.approx(4 / 3, rel=1e-3)
 
 
 def test_focus_text_keeps_method_section():

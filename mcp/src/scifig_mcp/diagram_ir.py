@@ -14,7 +14,7 @@ Schema:
   "edges": [{"id": "e1", "source": "n1", "target": "n2",
              "label": "特征", "style": "solid|dashed|feedback"}],
   "legend": [{"label": "主流程", "style": "solid"}],
-  "layout": {"row_scale": 0.68},
+  "layout": {"row_scale": 1.0, "canvas_ratio": "4:3"},
   "locks": {"nodes": ["n1"], "edges": ["e1"], "groups": []}
 }
 """

@@ -29,6 +29,7 @@ except Exception:  # pragma: no cover
 NODE_W, NODE_H = 190, 64
 GAP_X, GAP_Y = 60, 40
 PAD = 100
+DEFAULT_CANVAS_RATIO = 4.0 / 3.0
 SVG_FONT_FAMILY = os.environ.get(
     "SCIFIG_SVG_FONT_FAMILY",
     "Microsoft YaHei, SimHei, Arial, Helvetica, sans-serif",
@@ -194,6 +195,26 @@ def _text_w(s: str, font_size: float) -> float:
     ) * font_size
 
 
+def _canvas_ratio(ir: Dict[str, Any]) -> float:
+    """返回画布宽高比；科研图默认采用 PPT/论文常见的 4:3。"""
+    value = ir.get("layout", {}).get("canvas_ratio", DEFAULT_CANVAS_RATIO)
+    if isinstance(value, str):
+        text = value.strip().lower().replace("：", ":")
+        if ":" in text:
+            try:
+                width, height = (float(part) for part in text.split(":", 1))
+                value = width / height
+            except (TypeError, ValueError, ZeroDivisionError):
+                value = DEFAULT_CANVAS_RATIO
+        else:
+            value = DEFAULT_CANVAS_RATIO
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        ratio = DEFAULT_CANVAS_RATIO
+    return ratio if 0.5 <= ratio <= 4.0 else DEFAULT_CANVAS_RATIO
+
+
 def _column_of(x: float) -> int:
     """LR 布局：由节点中心 x 反推所在列（拓扑层）。"""
     return int(round((x - PAD - NODE_W / 2) / (NODE_W + GAP_X)))
@@ -297,6 +318,13 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
     max_x = max(xs) + NODE_W / 2 + PAD if xs else 600
     max_y = max(ys) + NODE_H / 2 + PAD if ys else 500
     W, H = int(max_x), int(max_y)
+    content_height = H
+    ratio = _canvas_ratio(ir)
+    if W / max(H, 1) > ratio:
+        H = int(round(W / ratio))
+    else:
+        W = int(round(H * ratio))
+    content_offset_y = max(0.0, (H - content_height) / 2.0)
 
     parts: List[str] = []
     parts.append(
@@ -304,6 +332,8 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
         f'viewBox="0 0 {W} {H}" font-family="{html.escape(SVG_FONT_FAMILY)}">'
     )
     parts.append(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
+    if content_offset_y:
+        parts.append(f'<g transform="translate(0,{content_offset_y:.2f})">')
 
     # 泳道背景
     if lanes:
@@ -432,6 +462,9 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                            has_icon=has_icon, desc=desc)
         if has_icon and iconlib is not None:
             parts.append(_icon_inline_svg(svg_txt, cx, cy - NODE_H / 2 + 11, sc))
+
+    if content_offset_y:
+        parts.append("</g>")
 
     # 标题
     if ir.get("title"):
@@ -764,16 +797,23 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
     sc = get_scheme(scheme)
     group_styles = _group_style_map(ir, sc)
 
-    # 论文架构图的手工坐标经常比 16:9 页面宽很多。以前固定成
-    # 13.333 x 7.5 英寸会把右侧节点裁掉，或者迫使调用方把字体压得很小。
-    # PPTX 支持自定义页面尺寸，因此按节点实际边界生成内容适配画布，保留
-    # 原生可编辑形状和文字。高度也跟随内容，避免在宽幅论文图下产生大块空白。
+    # 论文架构图的手工坐标经常比 16:9 页面宽很多。PPTX 页面保持 4:3，
+    # 宽度仍按内容适配；当内容高度不足时增加上下留白并垂直居中，避免
+    # 生成 4.5:1 的超宽画布，也避免缩小节点和文字。
     cx0, cy0, cx1, cy1 = _pptx_bbox(ir, node_center)
     margin_x = 0.6
-    margin_top = 0.75
-    margin_bottom = 0.6
-    slide_width = max(10.0, (cx1 - cx0) / 72.0 + margin_x * 2)
-    slide_height = max(5.5, (cy1 - cy0) / 72.0 + margin_top + margin_bottom)
+    base_margin_top = 0.75
+    base_margin_bottom = 0.6
+    ratio = _canvas_ratio(ir)
+    content_width = (cx1 - cx0) / 72.0 + margin_x * 2
+    content_height = (cy1 - cy0) / 72.0 + base_margin_top + base_margin_bottom
+    slide_width = max(10.0, content_width)
+    slide_height = slide_width / ratio
+    if slide_height < content_height:
+        slide_height = content_height
+        slide_width = slide_height * ratio
+    extra_height = max(0.0, slide_height - content_height)
+    margin_top = base_margin_top + extra_height / 2.0
 
     prs = Presentation()
     prs.slide_width = Inches(slide_width)

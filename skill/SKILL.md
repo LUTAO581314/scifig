@@ -37,7 +37,7 @@ description: 将学术论文(上传PDF/DOCX/DOC+需求)拆解为可编辑科研�
 1. **论文类型分类**：见 `references/paper-types.md`（方法/机制/评测/综述/理论/工程/数据）
 2. **识别可作图信息**：流程 / 机制 / 架构 / 对比 / 结构 / 数据等
 3. **推荐图清单**：对应 `references/figure-types.md` 中的图示类型
-4. 输出 **Diagram IR**（JSON）：`{title, direction, groups, lanes, nodes, edges, locks}`
+4. 输出 **Diagram IR**（JSON）：`{title, direction, groups, lanes, nodes, edges, layout, locks}`；`layout.canvas_ratio` 默认使用科研图常见的 `"4:3"`，汇报场景可指定 `"16:9"`
 
 > ⚠️ **对话内确认闸门**：调用 `export_spec` 把 IR 转成带 `[LOCKED]` 标记的可读文本，
 > 展示给用户确认/修改（可加/删/改节点、连线、分组，或用 locks 锁定要保留的元素），
