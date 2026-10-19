@@ -120,6 +120,9 @@ def _user_prompt(paper_text: str, requirement: str) -> str:
 - 每个节点必须有 label；边必须引用存在的节点 id
 - 同一功能的节点归入同一 group；用 lanes 表示并行分支或并行阶段
 - 单个节点要么属于 lane、要么属于 group，不要对同一划分两者都填（冗余双容器会导致布局断裂）
+- 4:3 科研架构图每行最多放 4 个高层模块；把 tsfresh/FSA/TW 等细节写入节点 desc，避免把每个实现步骤都横向展开
+- 主流程、评价/历史约束、解释/诊断应分成独立 group 或 lane；模型池和 y1-y5 应表达为并行或多输出关系
+- 优先使用 2-3 层结构和 layout.row_scale/layout.column_scale 调整间距，不要生成单行超长流水线
 - 只输出 JSON。"""
 
 
