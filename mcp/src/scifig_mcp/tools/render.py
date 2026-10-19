@@ -115,6 +115,19 @@ def _layout(ir: Dict[str, Any]) -> Tuple[Dict, Dict[str, int], Dict, Dict]:
         and "x" in nd["position"] and "y" in nd["position"]
     }
     if nodes and len(manual_positions) == len(nodes):
+        # 可选的紧凑纵向版式：保留人工 x 坐标，只压缩不同层之间的空白。
+        # 适用于论文图的上下两层结构；默认不改变现有手工坐标。
+        layout_cfg = ir.get("layout", {})
+        try:
+            row_scale = float(layout_cfg.get("row_scale", 1.0))
+        except (TypeError, ValueError):
+            row_scale = 1.0
+        if row_scale != 1.0 and manual_positions:
+            min_y = min(y for _, y in manual_positions.values())
+            manual_positions = {
+                nid: (x, min_y + (y - min_y) * row_scale)
+                for nid, (x, y) in manual_positions.items()
+            }
         return manual_positions, layers, groups, lanes
 
     # 泳道顺序（保持出现顺序）
@@ -212,12 +225,21 @@ def _ortho_pts(
         tx = x2 - d * (tw / 2)
         if abs(y2 - y1) <= 2:
             return [(sx, y1), (tx, y2)]
-        # 反向边采用跨空白区的斜向回流，避免 Z 形路径穿过评价节点，
-        # 也避免在画布最右侧形成容易被误读为边框的巨大 U 形回路。
+        # 反向边沿空白带正交回流，避免长斜线穿越分组边界。
+        # 回流带位于两排节点之间；若目标在源节点上方，则对称地放在上方。
         if tx < sx:
             sh = source_h if source_h is not None else gh
             th = target_h if target_h is not None else gh
-            return [(x1, y1 + sh / 2), (x2, y2 - th / 2)]
+            if y2 >= y1:
+                clear_y = y1 + sh / 2 + max(24.0, gh * 0.55)
+            else:
+                clear_y = y1 - sh / 2 - max(24.0, gh * 0.55)
+            return [
+                (x1, y1 + (sh / 2 if y2 >= y1 else -sh / 2)),
+                (x1, clear_y),
+                (x2, clear_y),
+                (x2, y2 - (th / 2 if y2 >= y1 else -th / 2)),
+            ]
         # 垂直段 x：前向边取两卡中点，反向边绕到源卡外侧
         vx = (sx + tx) / 2
         return [(sx, y1), (vx, y1), (vx, y2), (tx, y2)]
@@ -264,7 +286,6 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
 
     nodes = ir.get("nodes", [])
     edges = ir.get("edges", [])
-    groups = ir.get("groups", [])
     lanes = ir.get("lanes", [])
     sc = get_scheme(scheme_name)
     group_styles = _group_style_map(ir, sc)
@@ -307,27 +328,22 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
                 f'{html.escape(lane.get("label",""))}</text>'
             )
 
-    # 分组背景
-    for g in groups:
-        members = [nd for nd in nodes if nd.get("group") == g.get("id")]
-        if not members:
-            continue
-        mxs = [node_center[m["id"]][0] for m in members]
-        mys = [node_center[m["id"]][1] for m in members]
-        x0 = min(mxs) - NODE_W / 2 - 26
-        x1 = max(mxs) + NODE_W / 2 + 26
-        y0 = min(mys) - NODE_H / 2 - 38
-        y1 = max(mys) + NODE_H / 2 + 26
+    # 分组背景：按行拆分不连续成员，避免分组容器互相覆盖。
+    svg_node_sizes = _pptx_node_px_sizes(ir)
+    for g, x0, y0, x1, y1, show_label in _group_component_bounds(
+        ir, node_center, svg_node_sizes
+    ):
         parts.append(
             f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
             f'fill="{sc["neutral"]["fill"]}" stroke="{sc["neutral"]["stroke"]}" '
             f'stroke-dasharray="8,4" stroke-width="1.4" rx="14"/>'
         )
-        parts.append(
-            f'<text x="{(x0+x1)/2}" y="{y0-8}" text-anchor="middle" font-size="16" '
-            f'font-weight="bold" fill="{sc["neutral"]["stroke"]}">'
-            f'{html.escape(g.get("label",""))}</text>'
-        )
+        if show_label:
+            parts.append(
+                f'<text x="{(x0+x1)/2}" y="{y0-8}" text-anchor="middle" font-size="16" '
+                f'font-weight="bold" fill="{sc["neutral"]["stroke"]}">'
+                f'{html.escape(g.get("label",""))}</text>'
+            )
 
     # 箭头定义
     parts.append(
@@ -345,8 +361,18 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
             continue
         x1, y1 = a
         x2, y2 = b
-        pts = _ortho_pts(x1, y1, x2, y2, direction)
-        dash = ' stroke-dasharray="8,5"' if e.get("style") == "dashed" else ""
+        source_size = svg_node_sizes.get(e.get("source"), (NODE_W, NODE_H))
+        target_size = svg_node_sizes.get(e.get("target"), (NODE_W, NODE_H))
+        pts = _ortho_pts(
+            x1, y1, x2, y2, direction,
+            source_w=source_size[0], target_w=target_size[0],
+            source_h=source_size[1], target_h=target_size[1],
+        )
+        dash = (
+            ' stroke-dasharray="8,5"' if e.get("style") == "dashed"
+            else ' stroke-dasharray="3,3"' if e.get("style") == "feedback"
+            else ""
+        )
         parts.append(
             f'<path d="{_path_str(pts)}" fill="none" '
             f'stroke="{sc["arrow"]["stroke"]}" stroke-width="2.2" '
@@ -413,6 +439,25 @@ def build_svg(ir: Dict[str, Any], scheme_name: str = "okabe-ito") -> str:
             f'<text x="{W/2}" y="40" text-anchor="middle" font-size="22" '
             f'font-weight="bold" fill="{sc["text"]["fill"]}">{html.escape(ir["title"])}</text>'
         )
+
+    legend_items = _legend_items(ir)
+    if legend_items:
+        legend_x = max(24.0, W - 270.0)
+        for index, item in enumerate(legend_items):
+            ly = 24.0 + index * 22.0
+            dash = (
+                ' stroke-dasharray="8,5"' if item.get("style") == "dashed"
+                else ' stroke-dasharray="3,3"' if item.get("style") == "feedback"
+                else ""
+            )
+            parts.append(
+                f'<line x1="{legend_x}" y1="{ly}" x2="{legend_x + 24}" y2="{ly}" '
+                f'stroke="{sc["arrow"]["stroke"]}" stroke-width="2"{dash}/>'
+            )
+            parts.append(
+                f'<text x="{legend_x + 32}" y="{ly + 5}" font-size="13" '
+                f'fill="{sc["text"]["fill"]}">{html.escape(item["label"])}</text>'
+            )
 
     parts.append("</svg>")
     return "\n".join(parts)
@@ -552,12 +597,12 @@ def _pptx_node_px_sizes(ir: Dict[str, Any]) -> Dict[str, Tuple[float, float]]:
     }
 
 
-def _pptx_group_bounds(
+def _group_component_bounds(
     ir: Dict[str, Any],
     node_center: Dict[str, Tuple[float, float]],
     node_sizes: Dict[str, Tuple[float, float]],
-) -> List[Tuple[Dict[str, Any], float, float, float, float]]:
-    """返回 PPTX 分组背景边界（px），顺序与 IR 中 groups 一致。"""
+) -> List[Tuple[Dict[str, Any], float, float, float, float, bool]]:
+    """按 y 行拆分分组背景，避免非连续节点造成容器互相覆盖。"""
     result = []
     for group in ir.get("groups", []):
         members = [
@@ -566,23 +611,36 @@ def _pptx_group_bounds(
         ]
         if not members:
             continue
-        left = min(
-            node_center[nd["id"]][0] - node_sizes[nd["id"]][0] / 2.0
-            for nd in members
-        ) - 26.0
-        right = max(
-            node_center[nd["id"]][0] + node_sizes[nd["id"]][0] / 2.0
-            for nd in members
-        ) + 26.0
-        top = min(
-            node_center[nd["id"]][1] - node_sizes[nd["id"]][1] / 2.0
-            for nd in members
-        ) - 38.0
-        bottom = max(
-            node_center[nd["id"]][1] + node_sizes[nd["id"]][1] / 2.0
-            for nd in members
-        ) + 26.0
-        result.append((group, left, top, right, bottom))
+        rows: List[List[Dict[str, Any]]] = []
+        for member in sorted(members, key=lambda nd: node_center[nd["id"]][1]):
+            cy = node_center[member["id"]][1]
+            row = next(
+                (row for row in rows
+                 if abs(cy - node_center[row[0]["id"]][1]) <= NODE_H * 1.25),
+                None,
+            )
+            if row is None:
+                rows.append([member])
+            else:
+                row.append(member)
+        for row_index, row in enumerate(rows):
+            left = min(
+                node_center[nd["id"]][0] - node_sizes[nd["id"]][0] / 2.0
+                for nd in row
+            ) - 26.0
+            right = max(
+                node_center[nd["id"]][0] + node_sizes[nd["id"]][0] / 2.0
+                for nd in row
+            ) + 26.0
+            top = min(
+                node_center[nd["id"]][1] - node_sizes[nd["id"]][1] / 2.0
+                for nd in row
+            ) - 38.0
+            bottom = max(
+                node_center[nd["id"]][1] + node_sizes[nd["id"]][1] / 2.0
+                for nd in row
+            ) + 26.0
+            result.append((group, left, top, right, bottom, row_index == 0))
     return result
 
 
@@ -594,6 +652,23 @@ def _group_style_map(ir: Dict[str, Any], sc: Dict[str, Dict[str, str]]) -> Dict[
         for index, group in enumerate(ir.get("groups", []))
         if group.get("id")
     }
+
+
+def _legend_items(ir: Dict[str, Any]) -> List[Dict[str, str]]:
+    """返回显式图例；存在虚线边但未提供图例时给出保守默认项。"""
+    legend = ir.get("legend")
+    if isinstance(legend, list) and legend:
+        return [item for item in legend if isinstance(item, dict) and item.get("label")]
+    has_dashed = any(edge.get("style") == "dashed" for edge in ir.get("edges", []))
+    has_feedback = any(edge.get("style") == "feedback" for edge in ir.get("edges", []))
+    if has_dashed or has_feedback:
+        items = [{"label": "主流程", "style": "solid"}]
+        if has_dashed:
+            items.append({"label": "评价/历史分支", "style": "dashed"})
+        if has_feedback:
+            items.append({"label": "反馈/评价路径", "style": "feedback"})
+        return items
+    return []
 
 
 def _pptx_bbox(
@@ -616,7 +691,9 @@ def _pptx_bbox(
         bounds.append((cx - half_w, cy - half_h, cx + half_w, cy + half_h))
 
     # 分组框和标题属于可见内容，也需要计入自适应画布边界。
-    for _, left, top, right, bottom in _pptx_group_bounds(ir, node_center, node_sizes):
+    for _, left, top, right, bottom, _ in _group_component_bounds(
+        ir, node_center, node_sizes
+    ):
         bounds.append((left, top - 24.0, right, bottom))
 
     # 反向边在正交路由中可能向源节点外侧绕行（最多 60 px），
@@ -713,7 +790,7 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
     # 分组背景必须先加入，才能位于连线和节点之下；这使 PPTX 与 SVG/PNG
     # 都保留“数据/主流程/评价/结论”的视觉层级。
-    for group, left, top, right, bottom in _pptx_group_bounds(
+    for group, left, top, right, bottom, show_label in _group_component_bounds(
         ir, node_center, node_sizes
     ):
         panel = slide.shapes.add_shape(
@@ -734,19 +811,20 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         except Exception:
             pass
 
-        title = slide.shapes.add_textbox(
-            ox + Inches((left + right) / 2 / MM - 1.0),
-            oy + Inches((top - 28) / MM),
-            Inches(2.0), Inches(0.28),
-        )
-        title_tf = title.text_frame
-        title_tf.text = group.get("label", "")
-        title_tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-        title_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
-        title_tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
-        title_tf.paragraphs[0].font.size = Pt(12)
-        title_tf.paragraphs[0].font.bold = True
-        title_tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["neutral"]["stroke"])
+        if show_label:
+            title = slide.shapes.add_textbox(
+                ox + Inches((left + right) / 2 / MM - 1.0),
+                oy + Inches((top - 28) / MM),
+                Inches(2.0), Inches(0.28),
+            )
+            title_tf = title.text_frame
+            title_tf.text = group.get("label", "")
+            title_tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            title_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            title_tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
+            title_tf.paragraphs[0].font.size = Pt(12)
+            title_tf.paragraphs[0].font.bold = True
+            title_tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["neutral"]["stroke"])
 
     # 边（连接线 + 真正的端点箭头）
 
@@ -778,11 +856,12 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
             )
             conn.line.color.rgb = _hex_to_rgb(sc["arrow"]["stroke"])
             conn.line.width = Pt(2.2)
-            if e.get("style") == "dashed":
+            if e.get("style") in {"dashed", "feedback"}:
                 try:
                     from pptx.oxml.ns import qn
                     lnEl = conn.line._get_or_add_ln()
-                    d = lnEl.makeelement(qn('a:prstDash'), {'val': 'dash'})
+                    pattern = "sysDot" if e.get("style") == "feedback" else "dash"
+                    d = lnEl.makeelement(qn('a:prstDash'), {'val': pattern})
                     lnEl.append(d)
                 except Exception:
                     pass
@@ -791,11 +870,21 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
 
         if e.get("label"):
             mx, my = _label_center(pts)
+            label_width = max(0.7, min(2.4, (_text_w(e["label"], 11) + 14) / MM))
             tb = slide.shapes.add_textbox(
-                ox + Inches((mx - 55) / MM), oy + Inches((my - 16) / MM),
-                Inches(1.9), Inches(0.4))
+                ox + Inches((mx / MM) - label_width / 2),
+                oy + Inches((my / MM) - 0.16),
+                Inches(label_width), Inches(0.32))
+            tb.fill.solid()
+            tb.fill.fore_color.rgb = _hex_to_rgb("#FFFFFF")
+            tb.line.fill.background()
             tf = tb.text_frame
             tf.text = e["label"]
+            tf.margin_left = Inches(0.04)
+            tf.margin_right = Inches(0.04)
+            tf.margin_top = Inches(0.01)
+            tf.margin_bottom = Inches(0.01)
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
             tf.paragraphs[0].font.size = Pt(11)
@@ -878,6 +967,37 @@ def render_to_pptx(ir: Dict[str, Any], out_path: str, scheme: str = "okabe-ito")
         tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
         tf.paragraphs[0].font.size = Pt(24)
         tf.paragraphs[0].font.bold = True
+
+    legend_items = _legend_items(ir)
+    if legend_items:
+        legend_x = max(margin_x, slide_width - 3.8)
+        for index, item in enumerate(legend_items):
+            ly = 0.24 + index * 0.27
+            sample = slide.shapes.add_connector(
+                MSO_CONNECTOR.STRAIGHT,
+                Inches(legend_x), Inches(ly),
+                Inches(legend_x + 0.28), Inches(ly),
+            )
+            sample.line.color.rgb = _hex_to_rgb(sc["arrow"]["stroke"])
+            sample.line.width = Pt(1.6)
+            if item.get("style") in {"dashed", "feedback"}:
+                try:
+                    from pptx.oxml.ns import qn
+                    ln = sample.line._get_or_add_ln()
+                    pattern = "sysDot" if item.get("style") == "feedback" else "dash"
+                    ln.append(ln.makeelement(qn("a:prstDash"), {"val": pattern}))
+                except Exception:
+                    pass
+            label_box = slide.shapes.add_textbox(
+                Inches(legend_x + 0.36), Inches(ly - 0.12),
+                Inches(2.8), Inches(0.24),
+            )
+            label_tf = label_box.text_frame
+            label_tf.text = item["label"]
+            label_tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            label_tf.paragraphs[0].font.name = PPTX_FONT_FAMILY
+            label_tf.paragraphs[0].font.size = Pt(10)
+            label_tf.paragraphs[0].font.color.rgb = _hex_to_rgb(sc["text"]["fill"])
 
     prs.save(out_path)
     return out_path

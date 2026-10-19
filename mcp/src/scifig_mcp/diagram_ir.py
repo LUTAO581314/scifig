@@ -12,7 +12,9 @@ Schema:
   "nodes": [{"id": "n1", "label": "预处理", "group": "g1",
              "lane": "l1", "shape": "round|box|diamond|cylinder|ellipse"}],
   "edges": [{"id": "e1", "source": "n1", "target": "n2",
-             "label": "特征", "style": "solid|dashed"}],
+             "label": "特征", "style": "solid|dashed|feedback"}],
+  "legend": [{"label": "主流程", "style": "solid"}],
+  "layout": {"row_scale": 0.68},
   "locks": {"nodes": ["n1"], "edges": ["e1"], "groups": []}
 }
 """
@@ -25,7 +27,7 @@ from typing import Any, Dict, List
 # 有效取值的强约束（渲染与校验共用）
 SHAPES = {"round", "box", "diamond", "cylinder", "ellipse", "parallelogram", "cloud"}
 DIRECTIONS = {"LR", "TB", "RL", "BT"}
-EDGE_STYLES = {"solid", "dashed"}
+EDGE_STYLES = {"solid", "dashed", "feedback"}
 
 
 def validate_ir(ir: Dict[str, Any]) -> List[str]:

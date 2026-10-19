@@ -150,6 +150,33 @@ def test_svg_uses_ortho_path_for_lr():
     assert "Q " in svg  # 圆角二次贝塞尔
 
 
+def test_reverse_lr_edge_uses_orthogonal_feedback_route():
+    from scifig_mcp.tools.render import _ortho_pts
+
+    pts = _ortho_pts(
+        1660, 240, 760, 430, "LR",
+        source_w=190, target_w=190, source_h=64, target_h=64,
+    )
+    # 反向关系必须沿空白带折返，不能退化成长斜线。
+    assert len(pts) == 4
+    assert pts[0][0] == pts[1][0]
+    assert pts[1][1] == pts[2][1]
+    assert pts[2][0] == pts[3][0]
+
+
+def test_feedback_style_is_valid_and_rendered(tmp_path):
+    from scifig_mcp.diagram_ir import validate_ir
+    from scifig_mcp.tools.render import build_svg
+
+    ir = {
+        **PIPELINE,
+        "edges": [{"id": "e1", "source": "n1", "target": "n2", "style": "feedback"}],
+    }
+    assert validate_ir(ir) == []
+    svg = build_svg(ir, "paper-soft")
+    assert "stroke-dasharray=\"3,3\"" in svg
+
+
 def test_svg_node_desc_renders_two_lines():
     ir = {
         **PIPELINE,

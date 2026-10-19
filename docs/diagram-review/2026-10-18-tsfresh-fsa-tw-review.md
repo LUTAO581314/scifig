@@ -203,3 +203,36 @@
 ### 本轮结论
 
 当前版本已经从“箭头错误、PPTX 缺少分组、颜色完全单一”推进到“基本可编辑、可导出、跨格式大致一致”，但还没有达到参考图的专业架构图质量。下一步的核心不是继续加节点，而是先解决分组碰撞、紧凑布局、关系标签和论文版输出规格。
+
+## 第五轮迭代记录（2026-10-19）
+
+### 复盘触发点
+
+- 上一轮将跨行反向关系改成斜向回流，虽然消除了右侧巨大 U 形回路，但斜线仍然是画面中最重的元素。
+- 图 1 的“评价输入”没有明确区分主流程和反馈关系；读者容易把它当作普通的下一步处理。
+- IR 文档、校验器和渲染器对连线语义的支持只有 `solid/dashed`，无法表达“反馈/评价路径”。
+
+### 本轮修复
+
+1. 反向 LR 连线改为沿两排节点之间的空白带正交回流，统一为“出节点 → 垂直段 → 空白带水平段 → 入节点”的四点路径；SVG 与 PPTX 共用同一组几何点。
+2. 新增 `feedback` 连线样式：SVG 使用点划线，PPTX 使用原生 `sysDot` 预设线型，并在图例中显示“反馈/评价路径”。
+3. 图 1 的“预测任务 → 尾部指标”关系标记为 `feedback`，标签保留为“评价输入”，让关系语义由线型和标签共同表达。
+4. Diagram IR schema、`validate_ir` 和 `decompose` 草稿模板同步接受 `feedback`。
+5. 增加两项回归测试：反向边必须生成四点正交路径；`feedback` 必须通过 IR 校验并写入 SVG 点划线。
+
+### 验证结果
+
+- `python -m pytest -q`：72 passed。
+- 变更文件定向 Ruff 检查通过：`render.py`、`diagram_ir.py`、`decompose.py`、`test_regressions.py`。
+- 已重新生成 iter4 的 SVG、PNG 和原生可编辑 PPTX：
+  - `outputs/paper-analysis/mcp/figures/iter4/figure1-experiment.png`
+  - `outputs/paper-analysis/mcp/figures/iter4/figure2-method.png`
+  - `outputs/paper-analysis/mcp/pptx-qa-iter4/figure1-experiment.pptx`
+  - `outputs/paper-analysis/mcp/pptx-qa-iter4/figure2-method.pptx`
+
+### 仍需迭代的问题
+
+- 论文单栏/双栏导出规格还没有固化，当前画布仍适合编辑和汇报预览。
+- 分组标题、节点字号和中文字体度量还需要做小尺寸与灰度打印验收。
+- PPTX 连接线仍由多个独立连接符组成，移动节点后不会像 PowerPoint 原生连接符一样自动吸附重排。
+- 参考图中的图标、中心主体、侧栏和下方防御/记忆模块还没有抽象成可复用组件。
